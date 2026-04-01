@@ -1,0 +1,71 @@
+global: #全局配置
+  namespace: Development          #环境类型，分正式Production和非正式Development两种类型
+  env_name: dev                   #环境名称，非正式环境下多环境的名称
+
+server:
+  app: go-manus                      #业务的应用名
+  server: manus              #进程服务名
+  filter:
+    - recovery
+    - debuglog
+
+  service: #业务服务提供的service，可以有多个
+    - name: trpc.a2a_samples.openai_connector.Handler           #service的路由名称，请将ReplaceMe改成自己的service名字
+      network: tcp                 #网络监听类型  tcp udp
+      protocol: http_no_protocol               #应用层协议 trpc http
+      timeout: 1000000                #请求最长处理时间 单位 毫秒
+      ip: 127.0.0.1                    #指定网卡
+      port: 11000
+    - name: trpc.a2a_samples.host.A2AServerHandler           #service的路由名称，请将ReplaceMe改成自己的service名字
+      network: tcp                 #网络监听类型  tcp udp
+      protocol: http_no_protocol               #应用层协议 trpc http
+      timeout: 1000000                #请求最长处理时间 单位 毫秒
+      ip: 127.0.0.1                    #指定网卡
+      port: 8080
+    - name: trpc.a2a_samples.deepresearch.A2AServerHandler           #service的路由名称，请将ReplaceMe改成自己的service名字
+      network: tcp                 #网络监听类型  tcp udp
+      protocol: http_no_protocol               #应用层协议 trpc http
+      timeout: 1000000                #请求最长处理时间 单位 毫秒
+      ip: 127.0.0.1                    #指定网卡
+      port: 9993
+    - name: trpc.a2a_samples.urlreader.A2AServerHandler           #service的路由名称，请将ReplaceMe改成自己的service名字
+      network: tcp                 #网络监听类型  tcp udp
+      protocol: http_no_protocol               #应用层协议 trpc http
+      timeout: 100000                #请求最长处理时间 单位 毫秒
+      ip: 127.0.0.1                    #指定网卡
+      port: 9991
+    - name: trpc.a2a_samples.lbshelper.A2AServerHandler           #service的路由名称，请将ReplaceMe改成自己的service名字
+      network: tcp                 #网络监听类型  tcp udp
+      protocol: http_no_protocol               #应用层协议 trpc http
+      timeout: 1000000                #请求最长处理时间 单位 毫秒
+      ip: 127.0.0.1                    #指定网卡
+      port: 9992
+    # - name: trpc.a2a_samples.knowledgeChat.A2AServerHandler           #service的路由名称，请将ReplaceMe改成自己的service名字
+    #   network: tcp                 #网络监听类型  tcp udp
+    #   protocol: http_no_protocol               #应用层协议 trpc http
+    #   timeout: 1000000                #请求最长处理时间 单位 毫秒
+    #   ip: 127.0.0.1                    #指定网卡
+    #   port: 9995  
+client:
+  service:
+    - name: trpc.redis.deepresearch
+      target: redis://127.0.0.1:6379
+      timeout: 800
+    - name: trpc.redis.host
+      target: redis://127.0.0.1:6379
+      timeout: 800
+    - name: trpc.redis.lbshelper
+      target: redis://127.0.0.1:6379
+      timeout: 800
+    - name: trpc.redis.urlreader
+      target: redis://127.0.0.1:6379
+      timeout: 800
+    # - name: trpc.redis.knowledgechat
+    #   target: redis://127.0.0.1:6379
+    #   timeout: 800
+
+plugins:
+  log:
+    default:
+      - writer: console
+        level: debug

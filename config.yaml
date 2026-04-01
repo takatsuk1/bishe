@@ -1,0 +1,76 @@
+amap:
+  server_url: https://mcp.amap.com/sse?key=603b7b141042d9e7418bd3617c1758c2
+tavily:
+  apikey: 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
+jina:
+  apikey: jina_98aa1108156842569bfc4e41948371c1pj5Y2mkaha5R5sFIKaBR5TGHVGGe
+dashscope:
+  apikey: sk-5796edd8954b4227971d376c9007a699 
+llm:
+  url: https://dashscope.aliyuncs.com/compatible-mode/v1/
+  apikey: sk-5796edd8954b4227971d376c9007a699
+  reasoning_model: qwen3.5-122b-a10b
+  chat_model: qwen3.5-122b-a10b
+  intent_model: qwen3.5-122b-a10b # 意图识别模型
+  video_model: qwen3.5-122b-a10b # 视频分析模型
+  index_model: text-embedding-v4 #向量模型
+langfuse:
+  name: go-manus
+  host: https://us.cloud.langfuse.com
+  public_key: pk-lf-48f56b78-b88b-4bbd-a318-761bf1037ba3
+  secret_key: sk-lf-9c07b11e-71f9-41b6-94dd-451abd55d650
+redis:
+  url: redis://127.0.0.1:6379
+  max_window_size: 20
+mysql:
+  dsn: root:456987@tcp(127.0.0.1:3306)/bishe?charset=utf8mb4&parseTime=True&loc=Local
+host_agent:
+  agents:
+    - name: deepresearch
+      server_url: http://127.0.0.1:9993
+    - name: urlreader
+      server_url: http://127.0.0.1:9991
+    - name: lbshelper
+      server_url: http://127.0.0.1:9992
+    - name: schedulehelper
+      server_url: http://127.0.0.1:9994
+    - name: financehelper
+      server_url: http://127.0.0.1:9995
+    - name: memoreminder
+      server_url: http://127.0.0.1:9999
+    # - name: knowledgeChat
+    #   server_url: http://127.0.0.1:9995
+openai_connector:
+  agents:
+    - name: deepresearch
+      server_url: http://127.0.0.1:9993
+    - name: urlreader
+      server_url: http://127.0.0.1:9991
+    - name: lbshelper
+      server_url: http://127.0.0.1:9992
+    - name: schedulehelper
+      server_url: http://127.0.0.1:9994
+    - name: financehelper
+      server_url: http://127.0.0.1:9995
+    - name: memoreminder
+      server_url: http://127.0.0.1:9999
+    - name: host
+      server_url: http://127.0.0.1:8080
+    # - name: knowledgeChat
+    #   server_url: http://127.0.0.1:9995
+
+orchestrator:
+  enable: false
+  engine: eino
+  compatibility_mode: dual
+  default_task_timeout_sec: 600
+  retry:
+    max_attempts: 3
+    base_backoff_ms: 200
+    max_backoff_ms: 5000
+    enable_dead_letter: true
+
+auth:
+  jwt_secret: mmmanus-change-this-secret
+  access_token_ttl_minutes: 30
+  refresh_token_ttl_hours: 168

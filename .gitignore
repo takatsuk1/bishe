@@ -1,0 +1,20 @@
+# Go build/cache
+.gocache/
+bin/
+*.exe
+*.out
+
+# Node/Vite
+node_modules/
+web/node_modules/
+web/dist/
+
+# Logs and env
+*.log
+.env
+.env.*
+
+# IDE and OS
+.DS_Store
+Thumbs.db
+.vscode/.ropeproject/
