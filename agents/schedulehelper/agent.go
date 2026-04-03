@@ -10,7 +10,9 @@ import (
 	"ai/pkg/storage"
 	internaltm "ai/pkg/taskmanager"
 	"context"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -34,11 +36,13 @@ type workflowNodeWorker struct {
 }
 
 var scheduleHelperNodeProgressText = map[string]string{
-	"N_start":  "初始化日程规划任务",
-	"N_plan":   "分析需求并生成日程方案",
-	"N_refine": "补充优先级与提醒建议",
-	"N_end":    "输出最终日程建议",
+	"start":  "初始化日程规划任务",
+	"plan":   "分析需求并生成日程方案",
+	"refine": "补充优先级与提醒建议",
+	"end":    "输出最终日程建议",
 }
+
+var scheduleStepTokenRe = regexp.MustCompile(`\[\]\(step://[^\)]*\)`)
 
 func NewAgent() (*Agent, error) {
 	cfg := config.GetMainConfig()
@@ -154,6 +158,15 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	if err != nil {
 		return fmt.Errorf("failed to wait schedulehelper workflow: %w", err)
 	}
+	if manager != nil {
+		for _, nr := range runResult.NodeResults {
+			stepState, ok := scheduleToTerminalStepState(nr.State)
+			if !ok {
+				continue
+			}
+			a.emitScheduleStepEvent(ctx, manager, taskID, strings.TrimSpace(nr.NodeID), stepState)
+		}
+	}
 	if runResult.State != orchestrator.RunStateSucceeded {
 		if runResult.ErrorMessage != "" {
 			return fmt.Errorf("schedulehelper workflow failed: %s", runResult.ErrorMessage)
@@ -175,22 +188,52 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	return nil
 }
 
+func (a *Agent) emitScheduleStepEvent(ctx context.Context, manager internaltm.Manager, taskID string, nodeID string, state internalproto.StepState) {
+	if manager == nil {
+		return
+	}
+	messageZh := scheduleHelperNodeProgressText[nodeID]
+	if messageZh == "" {
+		messageZh = fmt.Sprintf("执行节点 %s", nodeID)
+	}
+	if state == internalproto.StepStateEnd {
+		messageZh = "完成：" + messageZh
+	}
+	if state == internalproto.StepStateError {
+		messageZh = "失败：" + messageZh
+	}
+	ev := internalproto.NewStepEvent("schedulehelper", "workflow", nodeID, state, messageZh)
+	text := messageZh
+	if token, tokenErr := internalproto.EncodeStepToken(ev); tokenErr == nil {
+		text = messageZh + "\n" + token
+	}
+	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
+		Role:  internalproto.MessageRoleAgent,
+		Parts: []internalproto.Part{internalproto.NewTextPart(text)},
+	})
+}
+
 func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.ExecutionRequest) (orchestrator.ExecutionResult, error) {
 	taskID, _ := req.Payload["task_id"].(string)
-	query, _ := req.Payload["query"].(string)
+	query := extractScheduleNodeQuery(req.NodeID, req.Payload)
+	logger.Infof("[TRACE] schedulehelper.node_input task=%s node=%s type=%s query_len=%d payload=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, len(strings.TrimSpace(query)), snapshotAnyForLog(req.Payload, 2000))
 
 	if req.NodeType != orchestrator.NodeTypeChatModel {
 		response := strings.TrimSpace(query)
 		if response == "" {
 			response = "ok"
 		}
-		return orchestrator.ExecutionResult{Output: map[string]any{"response": response}}, nil
+		output := map[string]any{"response": response}
+		logger.Infof("[TRACE] schedulehelper.node_output task=%s node=%s type=%s output=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, snapshotAnyForLog(output, 2000))
+		return orchestrator.ExecutionResult{Output: output}, nil
 	}
 
 	output, err := w.agent.callChatModel(ctx, taskID, query, req.NodeConfig)
 	if err != nil {
+		logger.Infof("[TRACE] schedulehelper.node_error task=%s node=%s type=%s err=%v", taskID, strings.TrimSpace(req.NodeID), req.NodeType, err)
 		return orchestrator.ExecutionResult{}, err
 	}
+	logger.Infof("[TRACE] schedulehelper.node_output task=%s node=%s type=%s output=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, snapshotAnyForLog(output, 2000))
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
@@ -347,6 +390,112 @@ func scheduleToTerminalStepState(state orchestrator.TaskState) (internalproto.St
 	}
 }
 
+func extractScheduleNodeQuery(nodeID string, payload map[string]any) string {
+	nodeID = strings.TrimSpace(nodeID)
+	switch nodeID {
+	case "plan", "N_plan":
+		fallback := strings.TrimSpace(fmt.Sprint(payload["input"]))
+		if fallback == "" || fallback == "<nil>" {
+			fallback = strings.TrimSpace(fmt.Sprint(payload["text"]))
+		}
+		if fallback == "" || fallback == "<nil>" {
+			fallback = strings.TrimSpace(fmt.Sprint(payload["query"]))
+		}
+		return extractScheduleUserQuery(payload, fallback)
+	case "refine", "N_refine":
+		if resp := extractSchedulePlanResponse(payload); resp != "" {
+			return resp
+		}
+	}
+
+	fallback := strings.TrimSpace(fmt.Sprint(payload["query"]))
+	if fallback == "" || fallback == "<nil>" {
+		fallback = strings.TrimSpace(fmt.Sprint(payload["input"]))
+	}
+	if fallback == "" || fallback == "<nil>" {
+		fallback = strings.TrimSpace(fmt.Sprint(payload["text"]))
+	}
+	return extractScheduleUserQuery(payload, fallback)
+}
+
+func extractSchedulePlanResponse(payload map[string]any) string {
+	for _, key := range []string{"plan", "N_plan"} {
+		node, ok := payload[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		resp := strings.TrimSpace(fmt.Sprint(node["response"]))
+		if resp != "" && resp != "<nil>" {
+			return resp
+		}
+	}
+	if latest, ok := payload["latest_output"].(map[string]any); ok {
+		resp := strings.TrimSpace(fmt.Sprint(latest["response"]))
+		if resp != "" && resp != "<nil>" {
+			return resp
+		}
+	}
+	return ""
+}
+
+func extractScheduleUserQuery(payload map[string]any, fallback string) string {
+	for _, key := range []string{"input", "text", "query"} {
+		raw := strings.TrimSpace(fmt.Sprint(payload[key]))
+		if raw == "" || raw == "<nil>" {
+			continue
+		}
+		if q := extractScheduleCurrentQuestion(raw); q != "" {
+			return q
+		}
+	}
+	if history, ok := payload["history_outputs"].([]any); ok {
+		for _, item := range history {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(fmt.Sprint(m["node_id"])) != "__input__" {
+				continue
+			}
+			out, ok := m["output"].(map[string]any)
+			if !ok {
+				continue
+			}
+			raw := strings.TrimSpace(fmt.Sprint(out["query"]))
+			if raw == "" || raw == "<nil>" {
+				continue
+			}
+			if q := extractScheduleCurrentQuestion(raw); q != "" {
+				return q
+			}
+		}
+	}
+	return extractScheduleCurrentQuestion(strings.TrimSpace(fallback))
+}
+
+func extractScheduleCurrentQuestion(in string) string {
+	s := strings.TrimSpace(scheduleStepTokenRe.ReplaceAllString(in, " "))
+	if s == "" {
+		return ""
+	}
+	if i := strings.LastIndex(s, "=== 当前问题 ==="); i >= 0 {
+		q := strings.TrimSpace(s[i+len("=== 当前问题 ==="):])
+		if q != "" {
+			return q
+		}
+	}
+	if i := strings.LastIndex(s, "用户:"); i >= 0 {
+		q := strings.TrimSpace(s[i+len("用户:"):])
+		if q != "" {
+			return q
+		}
+	}
+	if strings.Contains(s, "map[") {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
 func buildSchedulePrompt(userQuery string) string {
 	var sb strings.Builder
 	sb.WriteString("你是个人生活日程规划助手。\n")
@@ -376,17 +525,39 @@ func fallbackSchedulePlan(query string) string {
 	return "建议日程：\n1. 上午：处理最重要事项（90分钟专注）\n2. 下午：推进次优先任务并留 30 分钟复盘\n3. 晚上：总结完成情况并准备明日待办\n提醒：每完成一个时间块后记录进度。\n需求摘要：" + q
 }
 
+func snapshotAnyForLog(v any, maxLen int) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if maxLen > 0 && len(s) > maxLen {
+			return s[:maxLen] + "...(truncated)"
+		}
+		if s == "" {
+			return "<empty>"
+		}
+		return s
+	}
+	s := strings.TrimSpace(string(b))
+	if maxLen > 0 && len(s) > maxLen {
+		return s[:maxLen] + "...(truncated)"
+	}
+	if s == "" {
+		return "<empty>"
+	}
+	return s
+}
+
 func buildScheduleHelperWorkflow() (*orchestrator.Workflow, error) {
 	wf, err := orchestrator.NewWorkflow(ScheduleHelperWorkflowID, "schedulehelper default workflow")
 	if err != nil {
 		return nil, err
 	}
 
-	if err = wf.AddNode(orchestrator.Node{ID: "N_start", Type: orchestrator.NodeTypeStart}); err != nil {
+	if err = wf.AddNode(orchestrator.Node{ID: "start", Type: orchestrator.NodeTypeStart}); err != nil {
 		return nil, err
 	}
 	if err = wf.AddNode(orchestrator.Node{
-		ID:       "N_plan",
+		ID:       "plan",
 		Type:     orchestrator.NodeTypeChatModel,
 		AgentID:  ScheduleHelperWorkflowWorkerID,
 		TaskType: "chat_model",
@@ -398,7 +569,7 @@ func buildScheduleHelperWorkflow() (*orchestrator.Workflow, error) {
 		return nil, err
 	}
 	if err = wf.AddNode(orchestrator.Node{
-		ID:       "N_refine",
+		ID:       "refine",
 		Type:     orchestrator.NodeTypeChatModel,
 		AgentID:  ScheduleHelperWorkflowWorkerID,
 		TaskType: "chat_model",
@@ -409,17 +580,17 @@ func buildScheduleHelperWorkflow() (*orchestrator.Workflow, error) {
 	}); err != nil {
 		return nil, err
 	}
-	if err = wf.AddNode(orchestrator.Node{ID: "N_end", Type: orchestrator.NodeTypeEnd}); err != nil {
+	if err = wf.AddNode(orchestrator.Node{ID: "end", Type: orchestrator.NodeTypeEnd}); err != nil {
 		return nil, err
 	}
 
-	if err = wf.AddEdge("N_start", "N_plan"); err != nil {
+	if err = wf.AddEdge("start", "plan"); err != nil {
 		return nil, err
 	}
-	if err = wf.AddEdge("N_plan", "N_refine"); err != nil {
+	if err = wf.AddEdge("plan", "refine"); err != nil {
 		return nil, err
 	}
-	if err = wf.AddEdge("N_refine", "N_end"); err != nil {
+	if err = wf.AddEdge("refine", "end"); err != nil {
 		return nil, err
 	}
 

@@ -46,7 +46,6 @@ const monitorStepError = ref('')
 let monitorPollTimer: number | null = null
 
 const stepScroller = ref<HTMLDivElement | null>(null)
-const previewCollapsed = ref(false)
 
 if (conversations.value.length === 0) {
   const initial = createConversation(selectedModel.value)
@@ -102,6 +101,7 @@ watch(
     await pollMonitorStepsOnce(nextRunId, nextTaskID)
     startMonitorPolling(nextRunId, nextTaskID)
   },
+  { immediate: true },
 )
 
 onBeforeUnmount(() => {
@@ -111,6 +111,9 @@ onBeforeUnmount(() => {
 
 onMounted(() => {
   void loadAvailableAgents()
+  void nextTick(() => {
+    scrollStepsToEnd()
+  })
 })
 
 async function loadAvailableAgents(): Promise<void> {
@@ -289,6 +292,14 @@ const detailedStepEvents = computed(() =>
   monitorStepEvents.value.length > 0 ? monitorStepEvents.value : activeStepEvents.value,
 )
 
+watch(
+  () => [detailedStepEvents.value.length, activeConversationId.value] as const,
+  async () => {
+    await nextTick()
+    scrollStepsToEnd()
+  },
+)
+
 function scrollStepsToEnd(): void {
   const el = stepScroller.value
   if (!el) {
@@ -313,56 +324,96 @@ function normalizeAgentLabel(agentId: string, workflowId: string): string {
   return cleaned || raw
 }
 
-function monitorEventToStep(event: MonitorEvent): StepEvent {
+function parseNodeTypeFromMessage(message: string): string {
+  const text = (message || '').trim()
+  if (!text) {
+    return ''
+  }
+  const m = text.match(/\(([^)]+)\)\s+(started|finished|failed)$/i)
+  if (!m) {
+    return ''
+  }
+  return (m[1] || '').trim()
+}
+
+function nodeTypeFromEvents(events: MonitorEvent[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const ev of events) {
+    const node = (ev.nodeId || '').trim()
+    if (!node) {
+      continue
+    }
+    if (ev.eventType === 'model_called') {
+      out[node] = 'chat_model'
+      continue
+    }
+    if (ev.eventType === 'tool_called') {
+      out[node] = 'tool'
+      continue
+    }
+    const parsed = parseNodeTypeFromMessage(ev.message || '')
+    if (parsed) {
+      out[node] = parsed
+    }
+  }
+  return out
+}
+
+function monitorEventToStep(event: MonitorEvent, nodeTypeByID: Record<string, string>): StepEvent {
   const agent = normalizeAgentLabel(event.agentId ?? '', event.workflowId ?? '')
   const node = (event.nodeId || '').trim()
+  const nodeType = (nodeTypeByID[node] || '').trim() || 'unknown'
   let state: StepEvent['state'] = 'info'
   let messageZh = event.message || event.eventType
 
   switch (event.eventType) {
     case 'workflow_started':
       state = 'start'
-      messageZh = `开始：${agent}初始化任务`
+      messageZh = `${agent} 初始化任务`
       break
     case 'workflow_finished':
       state = 'end'
-      messageZh = `完成：${agent}整理结果结束，回复用户`
+      messageZh = `${agent} 整理结果结束，回复用户`
       break
     case 'workflow_failed':
       state = 'error'
-      messageZh = `错误：${agent}执行失败`
+      messageZh = `${agent} 执行失败`
       break
     case 'node_started':
       state = 'start'
-      messageZh = `开始：${agent}${node ? node : '节点'}执行`
+      messageZh = `节点名:${node || 'unknown'} 节点类型:${nodeType}`
       break
     case 'node_finished':
       state = 'end'
-      messageZh = `完成：${agent}${node ? node : '节点'}执行`
+      messageZh = `节点名:${node || 'unknown'} 节点类型:${nodeType}`
       break
     case 'node_failed':
       state = 'error'
-      messageZh = `错误：${agent}${node ? node : '节点'}执行失败`
+      messageZh = `节点名:${node || 'unknown'} 节点类型:${nodeType} 执行失败`
+      break
+    case 'model_called':
+      state = 'info'
+      messageZh = event.message || `chat model called by node ${node || 'unknown'}`
       break
     case 'agent_called':
       state = 'info'
-      messageZh = `信息：${agent}${node ? node : '节点'}调用子 Agent`
+      messageZh = event.message || `agent called by node ${node || 'unknown'}`
       break
     case 'tool_called':
       state = 'info'
-      messageZh = `信息：${agent}${node ? node : '节点'}调用工具`
+      messageZh = event.message || `tool called by node ${node || 'unknown'}`
       break
     case 'retry_triggered':
       state = 'info'
-      messageZh = `信息：${agent}${node ? node : '节点'}触发重试`
+      messageZh = `${agent}${node ? ` ${node}` : ''} 触发重试`
       break
     case 'timeout_triggered':
       state = 'error'
-      messageZh = `错误：${agent}${node ? node : '节点'}触发超时`
+      messageZh = `${agent}${node ? ` ${node}` : ''} 触发超时`
       break
     case 'alert_triggered':
       state = 'error'
-      messageZh = `告警：${event.message || `${agent}${node ? node : '节点'}触发告警`}`
+      messageZh = event.message || `${agent}${node ? ` ${node}` : ''} 触发告警`
       break
   }
 
@@ -429,7 +480,8 @@ async function pollMonitorStepsOnce(runId: string, taskId: string): Promise<void
       return ta - tb
     })
 
-    monitorStepEvents.value = sorted.map(monitorEventToStep).slice(-600)
+    const nodeTypeByID = nodeTypeFromEvents(sorted)
+    monitorStepEvents.value = sorted.map((ev) => monitorEventToStep(ev, nodeTypeByID)).slice(-600)
     monitorStepError.value = ''
   } catch (err) {
     monitorStepError.value = (err as Error).message
@@ -745,10 +797,6 @@ function preventDefaults(event: DragEvent): void {
   event.preventDefault()
 }
 
-function togglePreview(): void {
-  previewCollapsed.value = !previewCollapsed.value
-}
-
 function renderMarkdown(content: string): string {
   const parsed = marked.parse(content ?? '')
   return DOMPurify.sanitize(typeof parsed === 'string' ? parsed : String(parsed))
@@ -756,7 +804,7 @@ function renderMarkdown(content: string): string {
 </script>
 
 <template>
-  <div class="layout layout--chat" :class="{ 'preview-collapsed': previewCollapsed }">
+  <div class="layout layout--chat">
     <aside class="sidebar">
       <div class="brand">
         <p class="eyebrow">mmmanus</p>
@@ -803,9 +851,6 @@ function renderMarkdown(content: string): string {
           <span :class="['chip', status]">{{ formatTaskState(status) }}</span>
           <span class="task-text">task: {{ activeConversation.taskId ?? '—' }}</span>
           <span class="task-text">run: {{ activeConversation.runId ?? '—' }}</span>
-          <button type="button" class="cancel" @click="togglePreview">
-            {{ previewCollapsed ? '展开调试区' : '收起调试区' }}
-          </button>
         </div>
       </header>
 
@@ -904,47 +949,5 @@ function renderMarkdown(content: string): string {
       </footer>
     </main>
 
-    <aside class="preview-panel" v-if="activeConversation" v-show="!previewCollapsed">
-      <section class="run-steps" v-if="activeConversation.runId">
-        <div class="run-steps-header">
-          <strong>预览 / 调试</strong>
-          <span class="task-text" v-if="runSnapshot">{{ runSnapshot.state }}</span>
-        </div>
-        <p class="task-text" v-if="runSnapshot">当前节点：{{ runSnapshot.currentNodeId ?? '—' }}</p>
-        <div class="run-steps-chips" v-if="runSnapshot">
-          <span
-            v-for="nodeId in runStepNodeIds"
-            :key="nodeId"
-            :class="[
-              'chip',
-              'tiny',
-              nodeId === (runSnapshot.currentNodeId ?? '') && runSnapshot.state === 'running'
-                ? 'running'
-                : 'completed',
-            ]"
-          >
-            {{ nodeId }}
-          </span>
-        </div>
-      </section>
-
-      <section class="agent-tip">
-        <p>{{ availableAgents.find((agent) => agent.value === selectedModel)?.description }}</p>
-      </section>
-
-      <section class="step-bar" v-if="detailedStepEvents.length">
-        <strong class="step-bar-title">步骤流</strong>
-        <p class="task-text" v-if="monitorStepError">{{ monitorStepError }}</p>
-        <div class="step-scroller" title="可上下滚动查看所有步骤">
-          <div class="step-track">
-            <div v-for="(ev, idx) in detailedStepEvents" :key="`${ev.ts}-${ev.name}-${idx}`" class="step-row">
-              <span class="task-text">{{ formatTime(ev.ts) }}</span>
-              <span :class="['chip', 'tiny', stepChipClass(ev.state)]">{{ stepStateLabel(ev.state) }}</span>
-              <span class="step-row-message">{{ ev.messageZh }}</span>
-            </div>
-          </div>
-        </div>
-      </section>
-    </aside>
   </div>
 </template>

@@ -61,6 +61,7 @@ func GetRedisClient() (redis.UniversalClient, error) {
 
 type DraftWorkflow struct {
 	WorkflowID  string `json:"workflowId"`
+	UserID      string `json:"userId"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	StartNodeID string `json:"startNodeId"`

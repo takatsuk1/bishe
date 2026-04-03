@@ -21,7 +21,7 @@ func TestBuildScheduleHelperWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build workflow failed: %v", err)
 	}
-	if wf.StartNodeID != "N_start" {
+	if wf.StartNodeID != "start" {
 		t.Fatalf("unexpected start node: %s", wf.StartNodeID)
 	}
 	if len(wf.Nodes) != 4 {

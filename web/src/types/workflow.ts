@@ -1,4 +1,6 @@
 export type NodeType = 'start' | 'end' | 'condition' | 'loop' | 'chat_model' | 'tool'
+export type NodeInputSource = 'previous' | 'history'
+export type ConditionValueType = 'string' | 'bool'
 
 export interface PortDefinition {
   name: string
@@ -34,6 +36,8 @@ export interface NodeDefinition {
   id: string
   type: NodeType
   config?: Record<string, unknown>
+  inputSource?: NodeInputSource
+  conditionValueType?: ConditionValueType
   agentId?: string
   taskType?: string
   inputType?: string

@@ -82,8 +82,10 @@ var financeHelperNodeProgressText = map[string]string{
 	"N_start":          "初始化财务助理任务",
 	"N_plan":           "识别意图并规划执行步骤",
 	"N_is_ledger":      "判断是否为记账请求",
+	"N_route_report":   "同步意图用于报告判断",
 	"N_mysql_ledger":   "写入或更新用户账单数据",
 	"N_is_report":      "判断是否为财务报告请求",
+	"N_route_news":     "同步意图用于资讯判断",
 	"N_mysql_report":   "查询指定时间范围账单",
 	"N_is_news":        "判断是否为财经资讯请求",
 	"N_akshare_news":   "读取金融资讯并整理",
@@ -262,6 +264,7 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.ExecutionRequest) (orchestrator.ExecutionResult, error) {
 	taskID, _ := req.Payload["task_id"].(string)
 	query, _ := req.Payload["query"].(string)
+	logger.Infof("[TRACE] financehelper.node_input task=%s node=%s type=%s query_len=%d payload=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, len(strings.TrimSpace(query)), snapshotAnyForLog(req.Payload, 2000))
 
 	var (
 		output map[string]any
@@ -281,8 +284,10 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 		output = map[string]any{"response": response}
 	}
 	if err != nil {
+		logger.Infof("[TRACE] financehelper.node_error task=%s node=%s type=%s err=%v", taskID, strings.TrimSpace(req.NodeID), req.NodeType, err)
 		return orchestrator.ExecutionResult{}, err
 	}
+	logger.Infof("[TRACE] financehelper.node_output task=%s node=%s type=%s output=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, snapshotAnyForLog(output, 2000))
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
@@ -291,6 +296,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	if query == "" {
 		return nil, fmt.Errorf("query is empty")
 	}
+	originalQuery := extractFinanceUserQuery(payload, query)
 
 	intent := ""
 	baseURL := strings.TrimSpace(a.llmClient.BaseURL)
@@ -315,34 +321,44 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	}
 
 	switch intent {
+	case "route_action":
+		action := normalizeAction(strings.TrimSpace(fmt.Sprint(payload["action"])))
+		if action == "" {
+			plan := planFromPayload(payload)
+			action = normalizeAction(plan.Action)
+		}
+		if action == "" {
+			action = "advice"
+		}
+		return map[string]any{"response": action, "action": action}, nil
 	case "plan_request":
 		userID := normalizeUserID(payload["user_id"])
 		tableMetaHint := a.buildUserTableMetadataHint(ctx, userID)
-		prompt := buildPlanPrompt(query, userID, a.akshareToolCatalog, a.akshareToolSchema, tableMetaHint)
+		prompt := buildPlanPrompt(originalQuery, userID, a.akshareToolCatalog, a.akshareToolSchema, tableMetaHint)
 		logger.Infof("[financehelper] planner_prompt task=%s node=%s user=%s prompt=\n%s", taskID, nodeID, userID, prompt)
 		resp, err := llm.NewClient(baseURL, apiKey).ChatCompletion(ctx, model, []llm.Message{{Role: "user", Content: prompt}}, nil, nil)
 		if err != nil {
 			logger.Warnf("[financehelper] plan llm failed task=%s node=%s err=%v, using fallback", taskID, nodeID, err)
-			plan := finalizePlan(buildFallbackPlan(query), userID)
+			plan := finalizePlan(buildFallbackPlan(originalQuery), userID)
 			return planToOutput(plan), nil
 		}
 		plan, err := decodeFinancePlan(resp)
 		if err != nil {
 			logger.Warnf("[financehelper] invalid plan json task=%s node=%s err=%v, using fallback", taskID, nodeID, err)
-			plan = buildFallbackPlan(query)
+			plan = buildFallbackPlan(originalQuery)
 		}
 		plan = finalizePlan(plan, userID)
 		return planToOutput(plan), nil
 	case "final_response":
-		prompt := buildResponsePrompt(query, payload)
+		prompt := buildResponsePrompt(originalQuery, payload)
 		resp, err := llm.NewClient(baseURL, apiKey).ChatCompletion(ctx, model, []llm.Message{{Role: "user", Content: prompt}}, nil, nil)
 		if err != nil {
 			logger.Warnf("[financehelper] response llm failed task=%s node=%s err=%v, using fallback", taskID, nodeID, err)
-			return map[string]any{"response": a.fallbackResponse(query, payload)}, nil
+			return map[string]any{"response": a.fallbackResponse(originalQuery, payload)}, nil
 		}
 		resp = strings.TrimSpace(resp)
 		if resp == "" {
-			resp = a.fallbackResponse(query, payload)
+			resp = a.fallbackResponse(originalQuery, payload)
 		}
 		return map[string]any{"response": agentfmt.Clean(resp)}, nil
 	default:
@@ -373,17 +389,38 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeI
 		return nil, fmt.Errorf("tool node missing config.tool_name")
 	}
 
+	originalQuery := extractFinanceUserQuery(payload, query)
 	plan := planFromPayload(payload)
 	if plan.Action == "" {
-		plan = finalizePlan(buildFallbackPlan(query), normalizeUserID(payload["user_id"]))
+		plan = finalizePlan(buildFallbackPlan(originalQuery), normalizeUserID(payload["user_id"]))
 	}
+	effectivePurpose := strings.ToLower(strings.TrimSpace(purpose))
+	plannedAction := strings.ToLower(strings.TrimSpace(plan.Action))
 
 	switch toolName {
 	case "mysql_exec":
 		userID := normalizeUserID(payload["user_id"])
-		return a.executeMySQLPurpose(ctx, taskID, nodeID, purpose, query, userID, plan)
+		// New engine condition semantics use latest node output. In this workflow,
+		// non-ledger branches may converge on advice nodes, so dispatch by planned action.
+		if effectivePurpose == "advice" {
+			switch plannedAction {
+			case "ledger", "report", "advice":
+				effectivePurpose = plannedAction
+			case "news":
+				return map[string]any{"response": "news action does not require mysql", "records": []any{}, "result": []any{}}, nil
+			}
+		}
+		return a.executeMySQLPurpose(ctx, taskID, nodeID, effectivePurpose, originalQuery, userID, plan)
 	case "akshare-one-mcp":
-		return a.executeAksharePurpose(ctx, taskID, nodeID, purpose, plan)
+		if effectivePurpose == "advice" {
+			switch plannedAction {
+			case "news", "advice":
+				effectivePurpose = plannedAction
+			case "ledger", "report":
+				return map[string]any{"response": "no market tool call required", "records": []any{}, "result": []any{}}, nil
+			}
+		}
+		return a.executeAksharePurpose(ctx, taskID, nodeID, effectivePurpose, plan)
 	default:
 		return nil, fmt.Errorf("tool %s not found", toolName)
 	}
@@ -1178,6 +1215,28 @@ func toTerminalStepState(state orchestrator.TaskState) (internalproto.StepState,
 	}
 }
 
+func snapshotAnyForLog(v any, maxLen int) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if maxLen > 0 && len(s) > maxLen {
+			return s[:maxLen] + "...(truncated)"
+		}
+		if s == "" {
+			return "<empty>"
+		}
+		return s
+	}
+	s := strings.TrimSpace(string(b))
+	if maxLen > 0 && len(s) > maxLen {
+		return s[:maxLen] + "...(truncated)"
+	}
+	if s == "" {
+		return "<empty>"
+	}
+	return s
+}
+
 func buildPlanPrompt(userQuery string, userID string, akshareCatalog string, akshareSchema string, tableMetaHint string) string {
 	if strings.TrimSpace(userID) == "" {
 		userID = financeGuestUserID
@@ -1410,7 +1469,8 @@ func planToOutput(plan financePlan) map[string]any {
 		"sql_statements":    plan.SQLStatements,
 		"akshare_tool_name": plan.AkshareToolName,
 		"akshare_arguments": plan.AkshareArgs,
-		"response":          plan.Summary,
+		// Condition nodes now read latest_output.response, so expose action for routing.
+		"response": plan.Action,
 	}
 }
 
@@ -1526,11 +1586,13 @@ func buildFinanceHelperWorkflow() (*orchestrator.Workflow, error) {
 	nodes := []orchestrator.Node{
 		{ID: "N_start", Type: orchestrator.NodeTypeStart},
 		{ID: "N_plan", Type: orchestrator.NodeTypeChatModel, AgentID: FinanceHelperWorkflowWorkerID, TaskType: "chat_model", Config: map[string]any{"intent": "plan_request"}, PreInput: "规划财务请求处理步骤"},
-		{ID: "N_is_ledger", Type: orchestrator.NodeTypeCondition, Config: map[string]any{"left_type": "path", "left_value": "N_plan.action", "operator": "eq", "right_type": "value", "right_value": "ledger"}, Metadata: map[string]string{"true_to": "N_mysql_ledger", "false_to": "N_is_report"}},
+		{ID: "N_is_ledger", Type: orchestrator.NodeTypeCondition, Config: map[string]any{"left_type": "path", "left_value": "response", "operator": "eq", "right_type": "value", "right_value": "ledger"}, Metadata: map[string]string{"true_to": "N_mysql_ledger", "false_to": "N_route_report"}},
 		{ID: "N_mysql_ledger", Type: orchestrator.NodeTypeTool, AgentID: FinanceHelperWorkflowWorkerID, TaskType: "tool", Config: map[string]any{"tool_name": "mysql_exec", "purpose": "ledger"}},
-		{ID: "N_is_report", Type: orchestrator.NodeTypeCondition, Config: map[string]any{"left_type": "path", "left_value": "N_plan.action", "operator": "eq", "right_type": "value", "right_value": "report"}, Metadata: map[string]string{"true_to": "N_mysql_report", "false_to": "N_is_news"}},
+		{ID: "N_route_report", Type: orchestrator.NodeTypeChatModel, AgentID: FinanceHelperWorkflowWorkerID, TaskType: "chat_model", Config: map[string]any{"intent": "route_action"}, PreInput: "内部路由：同步当前 action 用于报告分支判断"},
+		{ID: "N_is_report", Type: orchestrator.NodeTypeCondition, Config: map[string]any{"left_type": "path", "left_value": "response", "operator": "eq", "right_type": "value", "right_value": "report"}, Metadata: map[string]string{"true_to": "N_mysql_report", "false_to": "N_route_news"}},
 		{ID: "N_mysql_report", Type: orchestrator.NodeTypeTool, AgentID: FinanceHelperWorkflowWorkerID, TaskType: "tool", Config: map[string]any{"tool_name": "mysql_exec", "purpose": "report"}},
-		{ID: "N_is_news", Type: orchestrator.NodeTypeCondition, Config: map[string]any{"left_type": "path", "left_value": "N_plan.action", "operator": "eq", "right_type": "value", "right_value": "news"}, Metadata: map[string]string{"true_to": "N_akshare_news", "false_to": "N_mysql_advice"}},
+		{ID: "N_route_news", Type: orchestrator.NodeTypeChatModel, AgentID: FinanceHelperWorkflowWorkerID, TaskType: "chat_model", Config: map[string]any{"intent": "route_action"}, PreInput: "内部路由：同步当前 action 用于资讯分支判断"},
+		{ID: "N_is_news", Type: orchestrator.NodeTypeCondition, Config: map[string]any{"left_type": "path", "left_value": "response", "operator": "eq", "right_type": "value", "right_value": "news"}, Metadata: map[string]string{"true_to": "N_akshare_news", "false_to": "N_mysql_advice"}},
 		{ID: "N_akshare_news", Type: orchestrator.NodeTypeTool, AgentID: FinanceHelperWorkflowWorkerID, TaskType: "tool", Config: map[string]any{"tool_name": "akshare-one-mcp", "purpose": "news"}},
 		{ID: "N_mysql_advice", Type: orchestrator.NodeTypeTool, AgentID: FinanceHelperWorkflowWorkerID, TaskType: "tool", Config: map[string]any{"tool_name": "mysql_exec", "purpose": "advice"}},
 		{ID: "N_akshare_advice", Type: orchestrator.NodeTypeTool, AgentID: FinanceHelperWorkflowWorkerID, TaskType: "tool", Config: map[string]any{"tool_name": "akshare-one-mcp", "purpose": "advice"}},
@@ -1551,10 +1613,12 @@ func buildFinanceHelperWorkflow() (*orchestrator.Workflow, error) {
 		{"N_start", "N_plan", ""},
 		{"N_plan", "N_is_ledger", ""},
 		{"N_is_ledger", "N_mysql_ledger", "true"},
-		{"N_is_ledger", "N_is_report", "false"},
+		{"N_is_ledger", "N_route_report", "false"},
+		{"N_route_report", "N_is_report", ""},
 		{"N_mysql_ledger", "N_respond", ""},
 		{"N_is_report", "N_mysql_report", "true"},
-		{"N_is_report", "N_is_news", "false"},
+		{"N_is_report", "N_route_news", "false"},
+		{"N_route_news", "N_is_news", ""},
 		{"N_mysql_report", "N_respond", ""},
 		{"N_is_news", "N_akshare_news", "true"},
 		{"N_is_news", "N_mysql_advice", "false"},
@@ -1618,6 +1682,66 @@ func normalizeUserID(raw any) string {
 		return financeGuestUserID
 	}
 	return userID
+}
+
+func extractFinanceUserQuery(payload map[string]any, fallback string) string {
+	if payload != nil {
+		for _, key := range []string{"input", "text", "query"} {
+			raw := strings.TrimSpace(fmt.Sprint(payload[key]))
+			if raw == "" || raw == "<nil>" {
+				continue
+			}
+			if q := extractFinanceCurrentQuestion(raw); q != "" {
+				return q
+			}
+		}
+		if history, ok := payload["history_outputs"].([]any); ok {
+			for _, item := range history {
+				m, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if strings.TrimSpace(fmt.Sprint(m["node_id"])) != "__input__" {
+					continue
+				}
+				out, ok := m["output"].(map[string]any)
+				if !ok {
+					continue
+				}
+				raw := strings.TrimSpace(fmt.Sprint(out["query"]))
+				if raw == "" || raw == "<nil>" {
+					continue
+				}
+				if q := extractFinanceCurrentQuestion(raw); q != "" {
+					return q
+				}
+			}
+		}
+	}
+	return extractFinanceCurrentQuestion(strings.TrimSpace(fallback))
+}
+
+func extractFinanceCurrentQuestion(in string) string {
+	s := strings.TrimSpace(in)
+	if s == "" {
+		return ""
+	}
+	if i := strings.LastIndex(s, "=== 当前问题 ==="); i >= 0 {
+		q := strings.TrimSpace(s[i+len("=== 当前问题 ==="):])
+		if q != "" {
+			return q
+		}
+	}
+	if i := strings.LastIndex(s, "用户:"); i >= 0 {
+		q := strings.TrimSpace(s[i+len("用户:"):])
+		if q != "" {
+			return q
+		}
+	}
+	if strings.Contains(s, "map[") {
+		return ""
+	}
+	return s
 }
 
 func replaceTablePlaceholder(sqlText string, tableName string) string {

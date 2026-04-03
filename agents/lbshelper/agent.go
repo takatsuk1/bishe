@@ -230,6 +230,7 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.ExecutionRequest) (orchestrator.ExecutionResult, error) {
 	taskID, _ := req.Payload["task_id"].(string)
 	query, _ := req.Payload["query"].(string)
+	logger.Infof("[TRACE] lbshelper.node_input task=%s node=%s type=%s query_len=%d payload=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, len(strings.TrimSpace(query)), snapshotAnyForLog(req.Payload, 2000))
 
 	var (
 		output map[string]any
@@ -240,7 +241,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 	case orchestrator.NodeTypeChatModel:
 		output, err = w.agent.callChatModel(ctx, taskID, query, req.NodeConfig)
 	case orchestrator.NodeTypeTool:
-		output, err = w.agent.callTool(ctx, taskID, query, req.NodeConfig)
+		output, err = w.agent.callTool(ctx, taskID, query, req.NodeConfig, req.Payload)
 	default:
 		response := strings.TrimSpace(query)
 		if response == "" {
@@ -249,8 +250,10 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 		output = map[string]any{"response": response}
 	}
 	if err != nil {
+		logger.Infof("[TRACE] lbshelper.node_error task=%s node=%s type=%s err=%v", taskID, strings.TrimSpace(req.NodeID), req.NodeType, err)
 		return orchestrator.ExecutionResult{}, err
 	}
+	logger.Infof("[TRACE] lbshelper.node_output task=%s node=%s type=%s output=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, snapshotAnyForLog(output, 2000))
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
@@ -316,7 +319,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	return map[string]any{"response": resp}, nil
 }
 
-func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeCfg map[string]any) (map[string]any, error) {
+func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
 	toolName := ""
 	if nodeCfg != nil {
 		if v, ok := nodeCfg["tool_name"].(string); ok {
@@ -336,7 +339,15 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 		}
 	}
 
-	toolCall := extractToolCall(query)
+	toolCall := map[string]any{}
+	if extractOut, ok := payload["N_extract"].(map[string]any); ok {
+		if raw := strings.TrimSpace(fmt.Sprint(extractOut["response"])); raw != "" {
+			toolCall = extractToolCall(raw)
+		}
+	}
+	if len(toolCall) == 0 {
+		toolCall = extractToolCall(query)
+	}
 	if q, ok := toolCall["query"].(string); ok && strings.TrimSpace(q) != "" {
 		params["query"] = strings.TrimSpace(q)
 	} else {
@@ -828,6 +839,28 @@ func taskManagerFromContext(ctx context.Context) internaltm.Manager {
 	}
 	m, _ := ctx.Value(ctxKeyTaskManager{}).(internaltm.Manager)
 	return m
+}
+
+func snapshotAnyForLog(v any, maxLen int) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if maxLen > 0 && len(s) > maxLen {
+			return s[:maxLen] + "...(truncated)"
+		}
+		if s == "" {
+			return "<empty>"
+		}
+		return s
+	}
+	s := strings.TrimSpace(string(b))
+	if maxLen > 0 && len(s) > maxLen {
+		return s[:maxLen] + "...(truncated)"
+	}
+	if s == "" {
+		return "<empty>"
+	}
+	return s
 }
 
 func (a *Agent) startProgressReporter(ctx context.Context, taskID string, runID string, manager internaltm.Manager) func() {

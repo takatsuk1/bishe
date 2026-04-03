@@ -78,6 +78,7 @@ const publishing = ref(false)
 const currentAgent = ref<UserAgent | null>(null)
 const userAgents = ref<UserAgent[]>([])
 const agentTestError = ref('')
+const pageError = ref('')
 
 const selectedNode = computed(() => {
   if (!workflow.value || !selectedNodeId.value) {
@@ -130,10 +131,16 @@ function uuid(): string {
 }
 
 function normalizeNodeDefaults(node: NodeDefinition): NodeDefinition {
+  const config = (node.config ?? {}) as Record<string, unknown>
+  const cfgInputSource = typeof config['input_source'] === 'string' ? String(config['input_source']) : ''
+  const normalizedInputSource = node.type === 'condition' || node.type === 'loop'
+    ? 'previous'
+    : (node.inputSource || cfgInputSource || 'previous')
   const normalized: NodeDefinition = {
     ...node,
     inputType: node.inputType || 'string',
     outputType: node.outputType || 'string',
+    inputSource: normalizedInputSource as 'previous' | 'history',
   }
 
   if (normalized.type === 'tool') {
@@ -142,6 +149,52 @@ function normalizeNodeDefaults(node: NodeDefinition): NodeDefinition {
   }
 
   return normalized
+}
+
+function toBackendNodeDefinition(node: NodeDefinition): NodeDefinition {
+  const next: NodeDefinition = {
+    ...node,
+    config: { ...(node.config ?? {}) },
+  }
+
+  if (next.type === 'condition') {
+    delete (next.config as Record<string, unknown>)['left_type']
+    delete (next.config as Record<string, unknown>)['left_value']
+  }
+
+  if ((next.type === 'condition' || next.type === 'loop') && next.config?.['input_source']) {
+    delete (next.config as Record<string, unknown>)['input_source']
+  }
+
+  if ((next.type === 'condition' || next.type === 'loop') && next.inputSource) {
+    delete (next as Partial<NodeDefinition>).inputSource
+  }
+
+  if (next.type !== 'condition' && next.type !== 'loop' && next.inputSource && !next.config?.['input_source']) {
+    ;(next.config as Record<string, unknown>)['input_source'] = next.inputSource
+  }
+
+  if (next.type === 'chat_model') {
+    if (next.outputType && !next.config?.['output_type']) {
+      ;(next.config as Record<string, unknown>)['output_type'] = next.outputType
+    }
+    if (next.inputType && !next.config?.['input_type']) {
+      ;(next.config as Record<string, unknown>)['input_type'] = next.inputType
+    }
+  }
+
+  if (next.config && Object.keys(next.config).length === 0) {
+    delete next.config
+  }
+
+  return next
+}
+
+function toBackendWorkflowDefinition(def: WorkflowDefinition): WorkflowDefinition {
+  return {
+    ...def,
+    nodes: def.nodes.map((n) => toBackendNodeDefinition(n)),
+  }
 }
 
 function getUiAgent(node: NodeDefinition): string {
@@ -189,13 +242,50 @@ function getNodeConfigRecord(node: NodeDefinition): Record<string, unknown> {
 
 function getConditionConfig(node: NodeDefinition): Record<string, string> {
   const cfg = getNodeConfigRecord(node)
+  const normalizeConditionType = (raw: unknown, fallback: 'string' | 'bool' = 'string'): 'string' | 'bool' => {
+    const v = String(raw ?? '').toLowerCase().trim()
+    if (v === 'bool') return 'bool'
+    if (v === 'string' || v === 'const' || v === 'path') return 'string'
+    return fallback
+  }
   return {
-    left_type: String(cfg['left_type'] ?? 'path'),
-    left_value: String(cfg['left_value'] ?? 'query'),
+    left_type: 'string',
+    left_value: '__previous_output__',
     operator: String(cfg['operator'] ?? 'eq'),
-    right_type: String(cfg['right_type'] ?? 'const'),
+    right_type: normalizeConditionType(cfg['right_type'], 'string'),
     right_value: String(cfg['right_value'] ?? ''),
   }
+}
+
+function getNodeInputSource(node: NodeDefinition): 'previous' | 'history' {
+  if (node.type === 'condition' || node.type === 'loop') {
+    return 'previous'
+  }
+  const fromNode = String(node.inputSource ?? '').trim().toLowerCase()
+  if (fromNode === 'history') {
+    return 'history'
+  }
+  const fromConfig = String(getNodeConfigRecord(node)['input_source'] ?? '').trim().toLowerCase()
+  if (fromConfig === 'history') {
+    return 'history'
+  }
+  return 'previous'
+}
+
+function setNodeInputSource(nodeId: string, source: 'previous' | 'history'): void {
+  const wf = ensureWorkflow()
+  wf.nodes = wf.nodes.map((n) => {
+    if (n.id !== nodeId) {
+      return n
+    }
+    if (n.type === 'condition' || n.type === 'loop') {
+      return { ...n, inputSource: 'previous' }
+    }
+    const config = getNodeConfigRecord(n)
+    config['input_source'] = source
+    return { ...n, inputSource: source, config }
+  })
+  saveDraft()
 }
 
 function setConditionConfig(nodeId: string, key: string, value: string): void {
@@ -429,8 +519,6 @@ function setSelectedNodeType(nextType: NodeType): void {
     node.condition = undefined
     node.config = {
       ...getNodeConfigRecord(node),
-      left_type: getConditionConfig(node).left_type,
-      left_value: getConditionConfig(node).left_value,
       operator: getConditionConfig(node).operator,
       right_type: getConditionConfig(node).right_type,
       right_value: getConditionConfig(node).right_value,
@@ -793,7 +881,7 @@ async function handleTestAgent(): Promise<void> {
     console.log('[WorkflowPage] testing workflow:', workflow.value.id, 'input:', input)
     
     const result = await testWorkflow({
-      workflowDef: workflow.value,
+      workflowDef: toBackendWorkflowDefinition(workflow.value),
       input,
     })
     
@@ -820,18 +908,18 @@ async function handlePublishAgent(): Promise<void> {
   try {
     // 1. 先保存工作流
     const workflowId = workflow.value.id || `workflow_${Date.now()}`
-    await saveWorkflowToDB(workflowId, {
+    await saveWorkflowToDB(workflowId, toBackendWorkflowDefinition({
       id: workflowId,
       name: workflow.value.name || '未命名工作流',
       description: workflow.value.description || '',
       startNodeId: workflow.value.startNodeId || '',
       nodes: workflow.value.nodes,
       edges: workflow.value.edges,
-    })
+    }))
     console.log('[WorkflowPage] workflow saved:', workflowId)
 
     // 2. 创建或更新Agent
-    const agentId = `agent_${workflowId}`
+    const agentId = workflowId
     let agent = userAgents.value.find(a => a.workflowId === workflowId)
     
     if (!agent) {
@@ -882,24 +970,50 @@ async function handleRestartAgent(): Promise<void> {
 }
 
 async function refreshWorkflows(): Promise<void> {
-  const res = await listWorkflows()
-  savedWorkflows.value = res.saved
-  draftWorkflows.value = res.drafts
+  try {
+    const res = await listWorkflows()
+    savedWorkflows.value = res.saved
+    draftWorkflows.value = res.drafts
+    pageError.value = ''
+  } catch (err) {
+    savedWorkflows.value = []
+    draftWorkflows.value = []
+    handlePageError(err, '加载工作流失败')
+  }
 }
 
 async function loadWorkflowById(id: string): Promise<void> {
-  const res = await getWorkflow(id)
-  activeWorkflowId.value = id
-  workflow.value = {
-    ...res.definition,
-    nodes: res.definition.nodes.map(normalizeNodeDefaults),
+  try {
+    const res = await getWorkflow(id)
+    activeWorkflowId.value = id
+    workflow.value = {
+      ...res.definition,
+      nodes: res.definition.nodes.map(normalizeNodeDefaults),
+    }
+    updatedAt.value = res.updatedAt
+    isDraft.value = res.isDraft ?? false
+    ttlMinutes.value = res.ttlMinutes ?? 0
+    selectedNodeId.value = ''
+    selectedEdgeIndex.value = null
+    pendingLink.value = null
+    pageError.value = ''
+  } catch (err) {
+    handlePageError(err, '加载工作流详情失败')
   }
-  updatedAt.value = res.updatedAt
-  isDraft.value = res.isDraft ?? false
-  ttlMinutes.value = res.ttlMinutes ?? 0
-  selectedNodeId.value = ''
-  selectedEdgeIndex.value = null
-  pendingLink.value = null
+}
+
+function isAuthError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  const lower = msg.toLowerCase()
+  return lower.includes('authentication required') || lower.includes('unauthorized') || lower.includes('401')
+}
+
+function handlePageError(err: unknown, fallback: string): void {
+  if (isAuthError(err)) {
+    pageError.value = '登录状态失效或无权限访问工作流，请重新登录后重试。'
+    return
+  }
+  pageError.value = err instanceof Error ? err.message : fallback
 }
 
 async function createWorkflow(): Promise<void> {
@@ -939,7 +1053,7 @@ async function createWorkflow(): Promise<void> {
 
 async function saveWorkflow(): Promise<void> {
   const wf = ensureWorkflow()
-  const res = await saveWorkflowToDB(wf.id, wf)
+  const res = await saveWorkflowToDB(wf.id, toBackendWorkflowDefinition(wf))
   updatedAt.value = res.updatedAt
   isDraft.value = false
   ttlMinutes.value = 0
@@ -988,19 +1102,20 @@ function addNode(type: NodeType): void {
     type,
     inputType: 'string',
     outputType: 'string',
+    inputSource: 'previous',
     agentId: isExecutableNodeType(type) ? (type === 'tool' ? undefined : 'host') : undefined,
     taskType: isExecutableNodeType(type) ? (type === 'tool' ? undefined : type) : undefined,
     condition: undefined,
     preInput: undefined,
     config: type === 'condition'
       ? {
-          left_type: 'path',
-          left_value: 'query',
-          operator: 'truthy',
-          right_type: 'const',
+          operator: 'eq',
+          right_type: 'string',
           right_value: '',
         }
-      : undefined,
+      : type === 'chat_model' || type === 'tool'
+        ? { input_source: 'previous' }
+        : undefined,
     loopConfig:
       type === 'loop'
         ? {
@@ -1140,7 +1255,7 @@ function saveDraft(): void {
   saveDraftTimer = setTimeout(() => {
     const wf = workflow.value
     if (wf) {
-      putWorkflow(wf.id, wf).catch((err) => {
+      putWorkflow(wf.id, toBackendWorkflowDefinition(wf)).catch((err) => {
         console.error('Failed to save draft:', err)
       })
     }
@@ -1222,6 +1337,20 @@ function beginLinkDrag(
     currentY: current.y,
     didDrop: false,
   }
+}
+
+function startOrFinishLinkFromOutputHandle(
+  event: MouseEvent,
+  nodeId: string,
+  kind: PendingLink['kind'],
+  branch?: 'true' | 'false' | 'body' | 'loop' | 'break' | 'exit',
+): void {
+  if (linkDragState.value && pendingLink.value && pendingLink.value.fromNodeId !== nodeId) {
+    event.preventDefault()
+    finishLinkDragOnInput(nodeId)
+    return
+  }
+  beginLinkDrag(event, nodeId, kind, branch)
 }
 
 function finishLinkDragOnInput(toNodeId: string, targetParam?: string): void {
@@ -1347,6 +1476,10 @@ function onNodeMouseDown(event: MouseEvent, nodeId: string): void {
   if (event.button !== 0) {
     return
   }
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.workflow-handle.input')) {
+    return
+  }
   const wf = ensureWorkflow()
   const node = wf.nodes.find((n) => n.id === nodeId)
   if (!node) {
@@ -1447,23 +1580,31 @@ onMounted(async () => {
   window.addEventListener('mousemove', onWindowMouseMove)
   window.addEventListener('mouseup', onWindowMouseUp)
 
-  await refreshAgents()
-  await refreshTools()
-  await refreshWorkflows()
+  try {
+    await refreshAgents()
+    await refreshTools()
+    await refreshWorkflows()
 
-  const allWorkflows = [...savedWorkflows.value, ...draftWorkflows.value]
-  if (allWorkflows.length > 0) {
-    await loadWorkflowById(allWorkflows[0].id)
-    return
-  }
-
-  // If user has no workflows yet, auto-create one example to satisfy "show host/deepresearch/...".
-  if (agents.value.length > 0) {
-    try {
-      await createExampleWorkflow()
-    } catch {
-      // ignore; user can retry via button
+    if (pageError.value) {
+      return
     }
+
+    const allWorkflows = [...savedWorkflows.value, ...draftWorkflows.value]
+    if (allWorkflows.length > 0) {
+      await loadWorkflowById(allWorkflows[0].id)
+      return
+    }
+
+    // If user has no workflows yet, auto-create one example to satisfy "show host/deepresearch/...".
+    if (agents.value.length > 0) {
+      try {
+        await createExampleWorkflow()
+      } catch {
+        // ignore; user can retry via button
+      }
+    }
+  } catch (err) {
+    handlePageError(err, '初始化编排页面失败')
   }
 })
 
@@ -1539,6 +1680,10 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
+      <section class="agent-tip" v-if="pageError">
+        <p>{{ pageError }}</p>
+      </section>
+
       <section class="workflow-body" :class="{ 'inspector-collapsed': inspectorCollapsed }">
         <div class="workflow-canvas" ref="workflowCanvasRef" @click="selectedNodeId = ''; selectedEdgeIndex = null">
           <svg class="workflow-edges" :width="4200" :height="4200">
@@ -1600,13 +1745,15 @@ onBeforeUnmount(() => {
                     type="button"
                     :title="`参数 ${param.name}`"
                     class="param-handle"
+                    @mousedown.stop.prevent
+                    @click.stop
                     @mouseup.stop="finishLinkDragOnInput(node.id, param.name)"
                   >
                     {{ param.name }}
                   </button>
                 </template>
                 <template v-else>
-                  <button type="button" @mouseup.stop="finishLinkDragOnInput(node.id)">in</button>
+                  <button type="button" @mousedown.stop.prevent @click.stop @mouseup.stop="finishLinkDragOnInput(node.id)">in</button>
                 </template>
               </div>
 
@@ -1617,7 +1764,8 @@ onBeforeUnmount(() => {
                   <button
                     type="button"
                     :class="{ active: pendingLink?.fromNodeId === node.id }"
-                    @mousedown.stop="beginLinkDrag($event, node.id, 'next')"
+                    @mousedown.stop="startOrFinishLinkFromOutputHandle($event, node.id, 'next')"
+                    @mouseup.stop="linkDragState ? finishLinkDragOnInput(node.id) : undefined"
                   >
                     out
                   </button>
@@ -1631,7 +1779,8 @@ onBeforeUnmount(() => {
                         pendingLink.kind === 'condition' &&
                         pendingLink.branch === 'true',
                     }"
-                    @mousedown.stop="beginLinkDrag($event, node.id, 'condition', 'true')"
+                    @mousedown.stop="startOrFinishLinkFromOutputHandle($event, node.id, 'condition', 'true')"
+                    @mouseup.stop="linkDragState ? finishLinkDragOnInput(node.id) : undefined"
                   >
                     T
                   </button>
@@ -1643,7 +1792,8 @@ onBeforeUnmount(() => {
                         pendingLink.kind === 'condition' &&
                         pendingLink.branch === 'false',
                     }"
-                    @mousedown.stop="beginLinkDrag($event, node.id, 'condition', 'false')"
+                    @mousedown.stop="startOrFinishLinkFromOutputHandle($event, node.id, 'condition', 'false')"
+                    @mouseup.stop="linkDragState ? finishLinkDragOnInput(node.id) : undefined"
                   >
                     F
                   </button>
@@ -1657,7 +1807,8 @@ onBeforeUnmount(() => {
                         pendingLink.kind === 'loop' &&
                         pendingLink.branch === 'body',
                     }"
-                    @mousedown.stop="beginLinkDrag($event, node.id, 'loop', 'body')"
+                    @mousedown.stop="startOrFinishLinkFromOutputHandle($event, node.id, 'loop', 'body')"
+                    @mouseup.stop="linkDragState ? finishLinkDragOnInput(node.id) : undefined"
                   >
                     BODY
                   </button>
@@ -1669,7 +1820,8 @@ onBeforeUnmount(() => {
                         pendingLink.kind === 'loop' &&
                         pendingLink.branch === 'loop',
                     }"
-                    @mousedown.stop="beginLinkDrag($event, node.id, 'loop', 'loop')"
+                    @mousedown.stop="startOrFinishLinkFromOutputHandle($event, node.id, 'loop', 'loop')"
+                    @mouseup.stop="linkDragState ? finishLinkDragOnInput(node.id) : undefined"
                   >
                     LOOP
                   </button>
@@ -1681,7 +1833,8 @@ onBeforeUnmount(() => {
                         pendingLink.kind === 'loop' &&
                         pendingLink.branch === 'break',
                     }"
-                    @mousedown.stop="beginLinkDrag($event, node.id, 'loop', 'break')"
+                    @mousedown.stop="startOrFinishLinkFromOutputHandle($event, node.id, 'loop', 'break')"
+                    @mouseup.stop="linkDragState ? finishLinkDragOnInput(node.id) : undefined"
                   >
                     BREAK
                   </button>
@@ -1693,7 +1846,8 @@ onBeforeUnmount(() => {
                         pendingLink.kind === 'loop' &&
                         pendingLink.branch === 'exit',
                     }"
-                    @mousedown.stop="beginLinkDrag($event, node.id, 'loop', 'exit')"
+                    @mousedown.stop="startOrFinishLinkFromOutputHandle($event, node.id, 'loop', 'exit')"
+                    @mouseup.stop="linkDragState ? finishLinkDragOnInput(node.id) : undefined"
                   >
                     EXIT
                   </button>
@@ -1777,8 +1931,18 @@ onBeforeUnmount(() => {
                   <textarea
                     v-model="selectedNode.preInput"
                     rows="2"
-                    placeholder="在进入该节点前融合输入，例如：请先根据上下文重写问题：{{query}}"
+                    placeholder="在进入该节点前补充说明，例如：请先根据上下文重写问题"
                   ></textarea>
+                </label>
+                <label>
+                  入参来源
+                  <select
+                    :value="getNodeInputSource(selectedNode)"
+                    @change="setNodeInputSource(selectedNode.id, ($event.target as HTMLSelectElement).value as 'previous' | 'history')"
+                  >
+                    <option value="previous">上一节点值</option>
+                    <option value="history">历史累加值</option>
+                  </select>
                 </label>
 
                 <template v-if="selectedNode.agentId === 'send_task' && selectedNode.taskType === 'delegate'">
@@ -1971,24 +2135,8 @@ onBeforeUnmount(() => {
                   ></textarea>
                 </label>
                 <label>
-                  左值类型
-                  <select
-                    :value="getConditionConfig(selectedNode).left_type"
-                    @change="setConditionConfig(selectedNode.id, 'left_type', ($event.target as HTMLSelectElement).value)"
-                  >
-                    <option value="path">path</option>
-                    <option value="const">const</option>
-                    <option value="bool">bool</option>
-                  </select>
-                </label>
-                <label>
-                  左值
-                  <input
-                    type="text"
-                    :value="getConditionConfig(selectedNode).left_value"
-                    @input="setConditionConfig(selectedNode.id, 'left_value', ($event.target as HTMLInputElement).value)"
-                    placeholder="例如：chat_model.response"
-                  />
+                  左值（固定）
+                  <input type="text" value="上一节点输出值" disabled />
                 </label>
                 <label>
                   运算符
@@ -2007,8 +2155,7 @@ onBeforeUnmount(() => {
                     :value="getConditionConfig(selectedNode).right_type"
                     @change="setConditionConfig(selectedNode.id, 'right_type', ($event.target as HTMLSelectElement).value)"
                   >
-                    <option value="const">const</option>
-                    <option value="path">path</option>
+                    <option value="string">string</option>
                     <option value="bool">bool</option>
                   </select>
                 </label>
@@ -2092,6 +2239,9 @@ onBeforeUnmount(() => {
       <header class="toolbar">
         <strong>未选择工作流</strong>
       </header>
+      <section class="agent-tip" v-if="pageError">
+        <p>{{ pageError }}</p>
+      </section>
       <section class="agent-tip">
         <p>请从左侧选择一个工作流，或新建一个。</p>
       </section>

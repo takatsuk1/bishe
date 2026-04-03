@@ -13,6 +13,7 @@ const (
 	EventTypeNodeStarted      EventType = "node_started"
 	EventTypeNodeFinished     EventType = "node_finished"
 	EventTypeNodeFailed       EventType = "node_failed"
+	EventTypeModelCalled      EventType = "model_called"
 	EventTypeAgentCalled      EventType = "agent_called"
 	EventTypeToolCalled       EventType = "tool_called"
 	EventTypeRetryTriggered   EventType = "retry_triggered"

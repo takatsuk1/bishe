@@ -11,6 +11,7 @@ import (
 	internaltm "ai/pkg/taskmanager"
 	"ai/pkg/tools"
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -23,7 +24,7 @@ const (
 	URLReaderDefaultTaskType  = "urlreader_default"
 )
 
-var urlRegex = regexp.MustCompile(`https?://[^\s"'<>]+`)
+var urlRegex = regexp.MustCompile(`https?://[^\s"'<>\]\)]+`)
 
 type ctxKeyTaskManager struct{}
 
@@ -197,6 +198,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 	taskID, _ := req.Payload["task_id"].(string)
 	query, _ := req.Payload["query"].(string)
 
+	logger.Infof("[TRACE] urlreader.node_input task=%s node=%s type=%s query_len=%d payload=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, len(strings.TrimSpace(query)), snapshotAnyForLog(req.Payload, 2000))
 	var (
 		output map[string]any
 		err    error
@@ -204,9 +206,9 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 
 	switch req.NodeType {
 	case orchestrator.NodeTypeChatModel:
-		output, err = w.agent.callChatModel(ctx, taskID, query, req.NodeConfig)
+		output, err = w.agent.callChatModel(ctx, taskID, query, req.NodeConfig, req.Payload)
 	case orchestrator.NodeTypeTool:
-		output, err = w.agent.callTool(ctx, taskID, query, req.NodeConfig)
+		output, err = w.agent.callTool(ctx, taskID, query, req.NodeConfig, req.Payload)
 	default:
 		response := strings.TrimSpace(query)
 		if response == "" {
@@ -215,12 +217,14 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 		output = map[string]any{"response": response}
 	}
 	if err != nil {
+		logger.Infof("[TRACE] urlreader.node_error task=%s node=%s type=%s err=%v", taskID, strings.TrimSpace(req.NodeID), req.NodeType, err)
 		return orchestrator.ExecutionResult{}, err
 	}
+	logger.Infof("[TRACE] urlreader.node_output task=%s node=%s type=%s output=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, snapshotAnyForLog(output, 2000))
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
-func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, nodeCfg map[string]any) (map[string]any, error) {
+func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("query is empty")
@@ -248,9 +252,13 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	finalPrompt := query
 	switch intent {
 	case "extract_url":
-		finalPrompt = buildExtractURLPrompt(query)
+		if directURL := extractURLCandidateFromPayload(payload); directURL != "" {
+			logger.Infof("[TRACE] urlreader.extract_url shortcut task=%s url=%s", taskID, directURL)
+			return map[string]any{"response": directURL}, nil
+		}
+		finalPrompt = buildExtractURLPrompt(extractOriginalQuestion(payload))
 	case "summarize_content":
-		finalPrompt = buildSummaryPrompt(query)
+		finalPrompt = buildSummaryPrompt(buildSummaryInput(payload, query))
 	}
 
 	logger.Infof("[TRACE] urlreader.chatmodel start task=%s intent=%s model=%s url=%s api_key_set=%t query_len=%d", taskID, intent, model, baseURL, apiKey != "", len(finalPrompt))
@@ -267,14 +275,20 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 		resp = "(empty LLM response)"
 	}
 	if intent == "extract_url" {
-		resp = firstURL(resp)
+		if fromResp := firstURL(resp); fromResp != "" {
+			resp = fromResp
+		} else if fallback := extractURLCandidateFromPayload(payload); fallback != "" {
+			resp = fallback
+		} else {
+			resp = ""
+		}
 	}
 	logger.Infof("[TRACE] urlreader.chatmodel done task=%s intent=%s resp_len=%d", taskID, intent, len(resp))
 
 	return map[string]any{"response": resp}, nil
 }
 
-func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeCfg map[string]any) (map[string]any, error) {
+func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
 	toolName := ""
 	if nodeCfg != nil {
 		if v, ok := nodeCfg["tool_name"].(string); ok {
@@ -285,7 +299,16 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 		return nil, fmt.Errorf("tool node missing config.tool_name")
 	}
 
-	urlText := firstURL(query)
+	urlText := ""
+	if extractOut, ok := payload["N_extract_url"].(map[string]any); ok {
+		urlText = firstURL(strings.TrimSpace(fmt.Sprint(extractOut["response"])))
+	}
+	if urlText == "" {
+		urlText = firstURL(query)
+	}
+	if urlText == "" {
+		urlText = extractURLCandidateFromPayload(payload)
+	}
 	if urlText == "" {
 		return nil, fmt.Errorf("no valid url found in extracted result")
 	}
@@ -331,6 +354,28 @@ func withTaskManager(ctx context.Context, m internaltm.Manager) context.Context 
 		return ctx
 	}
 	return context.WithValue(ctx, ctxKeyTaskManager{}, m)
+}
+
+func snapshotAnyForLog(v any, maxLen int) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if maxLen > 0 && len(s) > maxLen {
+			return s[:maxLen] + "...(truncated)"
+		}
+		if s == "" {
+			return "<empty>"
+		}
+		return s
+	}
+	s := strings.TrimSpace(string(b))
+	if maxLen > 0 && len(s) > maxLen {
+		return s[:maxLen] + "...(truncated)"
+	}
+	if s == "" {
+		return "<empty>"
+	}
+	return s
 }
 
 func taskManagerFromContext(ctx context.Context) internaltm.Manager {
@@ -442,7 +487,9 @@ func firstURL(text string) string {
 		return ""
 	}
 	if m := urlRegex.FindString(text); m != "" {
-		return strings.TrimSpace(m)
+		m = strings.TrimSpace(m)
+		m = strings.TrimRight(m, "])}>,.;:!?。；：！？")
+		return m
 	}
 	return ""
 }
@@ -466,6 +513,114 @@ func buildSummaryPrompt(toolOutput string) string {
 	prompt.WriteString("fetch 返回内容:\n")
 	prompt.WriteString(toolOutput)
 	return prompt.String()
+}
+
+func extractOriginalQuestion(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	for _, key := range []string{"input", "text", "query"} {
+		raw := strings.TrimSpace(fmt.Sprint(payload[key]))
+		if raw == "" || raw == "<nil>" {
+			continue
+		}
+		if q := extractCurrentQuestionSection(raw); q != "" {
+			return q
+		}
+		return raw
+	}
+	if history, ok := payload["history_outputs"].([]any); ok {
+		for _, item := range history {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(fmt.Sprint(m["node_id"])) != "__input__" {
+				continue
+			}
+			out, ok := m["output"].(map[string]any)
+			if !ok {
+				continue
+			}
+			raw := strings.TrimSpace(fmt.Sprint(out["query"]))
+			if raw == "" || raw == "<nil>" {
+				continue
+			}
+			if q := extractCurrentQuestionSection(raw); q != "" {
+				return q
+			}
+			return raw
+		}
+	}
+	return ""
+}
+
+func extractCurrentQuestionSection(in string) string {
+	s := strings.TrimSpace(in)
+	if s == "" {
+		return ""
+	}
+	if i := strings.LastIndex(s, "=== 当前问题 ==="); i >= 0 {
+		q := strings.TrimSpace(s[i+len("=== 当前问题 ==="):])
+		if q != "" {
+			return q
+		}
+	}
+	if i := strings.LastIndex(s, "用户:"); i >= 0 {
+		q := strings.TrimSpace(s[i+len("用户:"):])
+		if q != "" {
+			return q
+		}
+	}
+	return s
+}
+
+func extractURLCandidateFromPayload(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	candidates := []string{
+		strings.TrimSpace(fmt.Sprint(payload["input"])),
+		strings.TrimSpace(fmt.Sprint(payload["text"])),
+		strings.TrimSpace(fmt.Sprint(payload["query"])),
+	}
+	for _, c := range candidates {
+		if u := firstURL(c); u != "" {
+			return u
+		}
+	}
+	if history, ok := payload["history_outputs"].([]any); ok {
+		for _, item := range history {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			out, ok := m["output"].(map[string]any)
+			if !ok {
+				continue
+			}
+			if u := firstURL(strings.TrimSpace(fmt.Sprint(out["query"]))); u != "" {
+				return u
+			}
+		}
+	}
+	return ""
+}
+
+func buildSummaryInput(payload map[string]any, fallback string) string {
+	if payload != nil {
+		if fetchOut, ok := payload["N_fetch"].(map[string]any); ok {
+			if s := strings.TrimSpace(fmt.Sprint(fetchOut["response"])); s != "" && s != "<nil>" {
+				return s
+			}
+			if b, err := json.Marshal(fetchOut["result"]); err == nil {
+				if s := strings.TrimSpace(string(b)); s != "" {
+					return s
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func buildURLReaderWorkflow() (*orchestrator.Workflow, error) {

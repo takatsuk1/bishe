@@ -4,6 +4,7 @@ import {
   listUserTools,
   listMCPTools,
   startMCPServer,
+  stopMCPServer,
   createUserTool,
   updateUserTool,
   deleteUserTool,
@@ -16,11 +17,13 @@ import { canManageOwnTools, canManageSystemTools, currentPrimaryRole } from '../
 const tools = ref<UserTool[]>([])
 const loading = ref(false)
 const error = ref('')
+const fieldErrors = ref<Record<string, string>>({})
 const showModal = ref(false)
 const editingTool = ref<UserTool | null>(null)
 const mcpToolsByToolId = ref<Record<string, MCPServerTool[]>>({})
 const mcpToolsLoadingByToolId = ref<Record<string, boolean>>({})
 const mcpToolsErrorByToolId = ref<Record<string, string>>({})
+const mcpServerRunningByToolId = ref<Record<string, boolean>>({})
 const inlineEditorRef = ref<HTMLElement | null>(null)
 const readOnlyMode = computed(() => !canManageOwnTools() && !canManageSystemTools())
 const roleLabel = computed(() => currentPrimaryRole.value)
@@ -135,10 +138,30 @@ async function loadMCPToolsForCards() {
     mcpToolsLoadingByToolId.value[tool.toolId] = true
     mcpToolsErrorByToolId.value[tool.toolId] = ''
     try {
-      mcpToolsByToolId.value[tool.toolId] = await listMCPTools(tool.toolId)
+      const cfg = (tool.config || {}) as Record<string, unknown>
+      const mode = String(cfg.mcp_mode || 'url').trim()
+      if (mode === 'stdio') {
+        const started = await startMCPServer(tool.toolId)
+        mcpToolsByToolId.value[tool.toolId] = Array.isArray(started.tools) ? started.tools : []
+        mcpServerRunningByToolId.value[tool.toolId] = !!started.started
+      } else {
+        const listed = await listMCPTools(tool.toolId)
+        mcpToolsByToolId.value[tool.toolId] = listed
+        mcpServerRunningByToolId.value[tool.toolId] = listed.length > 0
+      }
     } catch (e) {
-      mcpToolsByToolId.value[tool.toolId] = []
-      mcpToolsErrorByToolId.value[tool.toolId] = e instanceof Error ? e.message : '获取 MCP tools 失败'
+      try {
+        const listed = await listMCPTools(tool.toolId)
+        mcpToolsByToolId.value[tool.toolId] = listed
+        mcpServerRunningByToolId.value[tool.toolId] = listed.length > 0
+        mcpToolsErrorByToolId.value[tool.toolId] = listed.length === 0
+          ? (e instanceof Error ? e.message : '获取 MCP tools 失败')
+          : ''
+      } catch {
+        mcpToolsByToolId.value[tool.toolId] = []
+        mcpServerRunningByToolId.value[tool.toolId] = false
+        mcpToolsErrorByToolId.value[tool.toolId] = e instanceof Error ? e.message : '获取 MCP tools 失败'
+      }
     } finally {
       mcpToolsLoadingByToolId.value[tool.toolId] = false
     }
@@ -152,6 +175,7 @@ function openCreateModal() {
   }
   console.log('[ToolPage] openCreateModal called')
   error.value = ''
+  fieldErrors.value = {}
   editingTool.value = null
   form.value = {
     toolId: '',
@@ -186,6 +210,7 @@ function openEditModal(tool: UserTool) {
   }
 
   editingTool.value = tool
+  fieldErrors.value = {}
   form.value = {
     toolId: tool.toolId,
     name: tool.name,
@@ -213,6 +238,14 @@ function handleToolTypeChange(nextType: string) {
   }
 }
 
+function setFieldError(key: string, message: string) {
+  fieldErrors.value[key] = message
+}
+
+function clearFieldErrors() {
+  fieldErrors.value = {}
+}
+
 async function handleSubmit() {
   if (editingTool.value && !canManageTool(editingTool.value)) {
     error.value = '当前角色无权保存该工具'
@@ -225,32 +258,33 @@ async function handleSubmit() {
   console.log('[ToolPage] handleSubmit called')
   console.log('[ToolPage] form value:', form.value)
   error.value = ''
+  clearFieldErrors()
   if (!form.value.toolId.trim()) {
     console.warn('[ToolPage] validation failed: toolId is empty')
-    error.value = 'toolId 不能为空'
+    setFieldError('toolId', '工具ID未填写')
     return
   }
   if (!form.value.name.trim()) {
     console.warn('[ToolPage] validation failed: name is empty')
-    error.value = '工具名称不能为空'
+    setFieldError('name', '工具名称未填写')
     return
   }
   if (form.value.toolType === 'http' && !String((form.value.config as any).url || '').trim()) {
     console.warn('[ToolPage] validation failed: url is empty')
-    error.value = 'HTTP 工具必须填写请求 URL'
+    setFieldError('http_url', 'HTTP 请求URL未填写')
     return
   }
   if (form.value.toolType === 'mcp') {
     const mode = String((form.value.config as any).mcp_mode || 'url').trim()
     if (mode === 'url' && !String((form.value.config as any).server_url || '').trim()) {
       console.warn('[ToolPage] validation failed: mcp server_url is empty')
-      error.value = '云端 MCP 必须填写服务 URL'
+      setFieldError('mcp_server_url', '云端 MCP URL未填写')
       return
     }
     if (mode === 'stdio') {
       const raw = String((form.value.config as any).mcp_servers_json || '').trim()
       if (!raw) {
-        error.value = '本地 MCP 必须填写 mcpServers JSON 配置'
+        setFieldError('mcp_servers_json', '本地 MCP mcpServers JSON未填写')
         return
       }
       try {
@@ -270,7 +304,7 @@ async function handleSubmit() {
         delete nextConfig.mcp_servers_json
         form.value.config = nextConfig
       } catch (err) {
-        error.value = err instanceof Error ? err.message : 'mcpServers JSON 解析失败'
+        setFieldError('mcp_servers_json', err instanceof Error ? err.message : 'mcpServers JSON 解析失败')
         return
       }
     }
@@ -315,9 +349,29 @@ async function handleStartMCP(tool: UserTool) {
   try {
     const result = await startMCPServer(tool.toolId)
     mcpToolsByToolId.value[tool.toolId] = Array.isArray(result.tools) ? result.tools : []
+    mcpServerRunningByToolId.value[tool.toolId] = !!result.started
   } catch (e) {
     mcpToolsByToolId.value[tool.toolId] = []
+    mcpServerRunningByToolId.value[tool.toolId] = false
     mcpToolsErrorByToolId.value[tool.toolId] = e instanceof Error ? e.message : '启动 MCP 失败'
+  } finally {
+    mcpToolsLoadingByToolId.value[tool.toolId] = false
+  }
+}
+
+async function handleStopMCP(tool: UserTool) {
+  if (!canManageTool(tool)) {
+    error.value = '当前角色无权操作该工具'
+    return
+  }
+  mcpToolsLoadingByToolId.value[tool.toolId] = true
+  mcpToolsErrorByToolId.value[tool.toolId] = ''
+  try {
+    await stopMCPServer(tool.toolId)
+    mcpServerRunningByToolId.value[tool.toolId] = false
+    mcpToolsByToolId.value[tool.toolId] = []
+  } catch (e) {
+    mcpToolsErrorByToolId.value[tool.toolId] = e instanceof Error ? e.message : '停止 MCP 失败'
   } finally {
     mcpToolsLoadingByToolId.value[tool.toolId] = false
   }
@@ -339,10 +393,13 @@ async function handleDelete(toolId: string) {
 }
 
 function addParameter() {
-  if (newParam.value.name) {
-    form.value.parameters.push({ ...newParam.value })
-    newParam.value = { name: '', type: 'string', required: false, description: '' }
+  if (!newParam.value.name.trim()) {
+    setFieldError('new_param_name', '参数名未填写')
+    return
   }
+  form.value.parameters.push({ ...newParam.value, name: newParam.value.name.trim() })
+  newParam.value = { name: '', type: 'string', required: false, description: '' }
+  delete fieldErrors.value.new_param_name
 }
 
 function removeParameter(index: number) {
@@ -350,10 +407,13 @@ function removeParameter(index: number) {
 }
 
 function addOutputParameter() {
-  if (newOutputParam.value.name) {
-    form.value.outputParameters.push({ ...newOutputParam.value })
-    newOutputParam.value = { name: '', type: 'string', required: false, description: '' }
+  if (!newOutputParam.value.name.trim()) {
+    setFieldError('new_output_param_name', '输出参数名未填写')
+    return
   }
+  form.value.outputParameters.push({ ...newOutputParam.value, name: newOutputParam.value.name.trim() })
+  newOutputParam.value = { name: '', type: 'string', required: false, description: '' }
+  delete fieldErrors.value.new_output_param_name
 }
 
 function removeOutputParameter(index: number) {
@@ -407,7 +467,7 @@ onMounted(() => {
             {{ mcpToolsErrorByToolId[tool.toolId] }}
           </div>
           <div v-else-if="(mcpToolsByToolId[tool.toolId] || []).length === 0" class="mcp-tool-list-hint">
-            {{ ((tool.config as any).mcp_mode || 'url') === 'stdio' ? '点击启动拉取 tools' : '未发现可用 tools' }}
+            {{ ((tool.config as any).mcp_mode || 'url') === 'stdio' ? '暂无 tools，可尝试重新启动' : '未发现可用 tools' }}
           </div>
           <div v-else class="mcp-tool-tags">
             <span
@@ -423,11 +483,21 @@ onMounted(() => {
         <div class="tool-actions">
           <button
             v-if="canManageTool(tool) && tool.toolType === 'mcp' && ((tool.config as any).mcp_mode || 'url') === 'stdio'"
+            v-show="!mcpServerRunningByToolId[tool.toolId]"
             type="button"
             class="btn-secondary"
             @click="handleStartMCP(tool)"
           >
             启动
+          </button>
+          <button
+            v-if="canManageTool(tool) && tool.toolType === 'mcp' && ((tool.config as any).mcp_mode || 'url') === 'stdio'"
+            v-show="mcpServerRunningByToolId[tool.toolId]"
+            type="button"
+            class="btn-secondary"
+            @click="handleStopMCP(tool)"
+          >
+            停止
           </button>
           <button v-if="canManageTool(tool)" type="button" class="btn-secondary" @click="openEditModal(tool)">编辑</button>
           <button v-if="canManageTool(tool)" type="button" class="btn-danger" @click="handleDelete(tool.toolId)">删除</button>
@@ -442,11 +512,13 @@ onMounted(() => {
         <div class="form-group">
           <label>工具ID</label>
           <input v-model="form.toolId" :disabled="!!editingTool" placeholder="例如: weather_api" />
+          <p v-if="fieldErrors.toolId" class="field-error">{{ fieldErrors.toolId }}</p>
         </div>
 
         <div class="form-group">
           <label>工具名称</label>
           <input v-model="form.name" placeholder="例如: 天气查询" />
+          <p v-if="fieldErrors.name" class="field-error">{{ fieldErrors.name }}</p>
         </div>
 
         <div class="form-group">
@@ -477,6 +549,7 @@ onMounted(() => {
             <label>请求URL</label>
             <input v-model="form.config.url" placeholder="https://api.example.com/data?key={{param}}" />
             <small>支持变量替换: {"param"}</small>
+            <p v-if="fieldErrors.http_url" class="field-error">{{ fieldErrors.http_url }}</p>
           </div>
         </template>
 
@@ -492,6 +565,7 @@ onMounted(() => {
           <div v-if="(form.config as any).mcp_mode !== 'stdio'" class="form-group">
             <label>云端 MCP URL</label>
             <input v-model="(form.config as any).server_url" placeholder="https://mcp.example.com/sse" />
+            <p v-if="fieldErrors.mcp_server_url" class="field-error">{{ fieldErrors.mcp_server_url }}</p>
           </div>
 
           <div v-else class="form-group">
@@ -508,6 +582,7 @@ onMounted(() => {
 }'
             ></textarea>
             <small>仅需提供 mcpServers JSON 配置</small>
+            <p v-if="fieldErrors.mcp_servers_json" class="field-error">{{ fieldErrors.mcp_servers_json }}</p>
           </div>
 
           <div v-if="(form.config as any).mcp_mode === 'stdio'" class="form-group">
@@ -527,14 +602,17 @@ onMounted(() => {
         <div class="form-group">
           <label>参数定义</label>
           <div class="param-input">
-            <input v-model="newParam.name" placeholder="参数名" />
+            <input class="param-name-input" v-model="newParam.name" placeholder="参数名（例如 query）" />
             <select v-model="newParam.type">
               <option value="string">字符串</option>
             </select>
-            <input type="checkbox" v-model="newParam.required" />
-            <span>必填</span>
+            <label class="param-required-toggle">
+              <input type="checkbox" v-model="newParam.required" />
+              <span>必填</span>
+            </label>
             <button type="button" @click="addParameter">添加</button>
           </div>
+          <p v-if="fieldErrors.new_param_name" class="field-error">{{ fieldErrors.new_param_name }}</p>
           <input v-model="newParam.description" placeholder="参数描述" />
           <div class="param-list">
             <div v-for="(param, index) in form.parameters" :key="index" class="param-item">
@@ -548,14 +626,17 @@ onMounted(() => {
         <div class="form-group">
           <label>输出参数定义</label>
           <div class="param-input">
-            <input v-model="newOutputParam.name" placeholder="输出参数名" />
+            <input class="param-name-input" v-model="newOutputParam.name" placeholder="输出参数名（例如 result）" />
             <select v-model="newOutputParam.type">
               <option value="string">字符串</option>
             </select>
-            <input type="checkbox" v-model="newOutputParam.required" />
-            <span>必填</span>
+            <label class="param-required-toggle">
+              <input type="checkbox" v-model="newOutputParam.required" />
+              <span>必填</span>
+            </label>
             <button type="button" @click="addOutputParameter">添加</button>
           </div>
+          <p v-if="fieldErrors.new_output_param_name" class="field-error">{{ fieldErrors.new_output_param_name }}</p>
           <input v-model="newOutputParam.description" placeholder="输出参数描述" />
           <div class="param-list">
             <div v-for="(param, index) in form.outputParameters" :key="index" class="param-item">
@@ -857,6 +938,12 @@ onMounted(() => {
   font-size: 12px;
 }
 
+.field-error {
+  margin: 6px 0 0;
+  color: #b1262f;
+  font-size: 12px;
+}
+
 .header-input,
 .param-input {
   display: flex;
@@ -867,6 +954,28 @@ onMounted(() => {
 .header-input input,
 .param-input input {
   flex: 1;
+}
+
+.param-name-input {
+  min-width: 190px;
+}
+
+.param-required-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 0 4px;
+  font-size: 13px;
+  color: var(--text-main);
+  white-space: nowrap;
+}
+
+.param-required-toggle input[type='checkbox'] {
+  width: auto;
+  flex: none;
+  margin: 0;
+  padding: 0;
 }
 
 .header-input button,

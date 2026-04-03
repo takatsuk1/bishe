@@ -5,13 +5,14 @@ import (
 	"bytes"         // 字节缓冲区
 	"context"       // 上下文管理
 	"encoding/json" // JSON 编解码
-	"fmt"          // 格式化输出
-	"io"           // 输入输出
-	"net/http"     // HTTP 客户端
-	"net/url"      // URL 解析
-	"path"         // 路径处理
-	"strings"      // 字符串处理
-	"time"         // 时间处理
+	"errors"
+	"fmt"      // 格式化输出
+	"io"       // 输入输出
+	"net/http" // HTTP 客户端
+	"net/url"  // URL 解析
+	"path"     // 路径处理
+	"strings"  // 字符串处理
+	"time"     // 时间处理
 )
 
 // Message 定义了聊天消息的结构
@@ -34,16 +35,16 @@ func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		BaseURL: baseURL,
 		APIKey:  strings.TrimSpace(apiKey),
-		HTTP:    &http.Client{Timeout: 60 * time.Second}, // 设置 60 秒超时
+		HTTP:    &http.Client{Timeout: 180 * time.Second}, // 设置 180 秒超时，降低大模型首包超时概率
 	}
 }
 
 // chatCompletionRequest 定义了聊天完成请求的结构
 type chatCompletionRequest struct {
-	Model       string    `json:"model"`       // 模型名称
-	Messages    []Message `json:"messages"`    // 消息列表
-	Stream      bool      `json:"stream"`      // 是否流式返回
-	MaxTokens   *int      `json:"max_tokens,omitempty"`   // 最大 token 数
+	Model       string    `json:"model"`                 // 模型名称
+	Messages    []Message `json:"messages"`              // 消息列表
+	Stream      bool      `json:"stream"`                // 是否流式返回
+	MaxTokens   *int      `json:"max_tokens,omitempty"`  // 最大 token 数
 	Temperature *float64  `json:"temperature,omitempty"` // 温度参数
 }
 
@@ -108,8 +109,12 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 	}
 
 	// 发送请求
+	start := time.Now()
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() == context.DeadlineExceeded) {
+			return "", fmt.Errorf("llm timeout model=%s url=%s elapsed=%s: %w", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), err)
+		}
 		return "", err
 	}
 	defer resp.Body.Close()

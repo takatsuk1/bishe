@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"ai/config"
 	"ai/pkg/agentmanager"
+	"ai/pkg/authz"
 	"ai/pkg/executor"
 	"ai/pkg/logger"
 	"ai/pkg/monitor"
@@ -170,6 +171,7 @@ func (api *OrchestratorAPI) handleListAgents(w http.ResponseWriter, r *http.Requ
 
 	// 追加已发布用户 agent，保证 chat/workflow 页面可选择。
 	if api.userAgentAPI != nil && api.userAgentAPI.storage != nil {
+		allowAllRead := hasAllScopeAccess(r, "orchestrator.agent.read")
 		existing := make(map[string]struct{}, len(agents))
 		for _, a := range agents {
 			existing[a.ID] = struct{}{}
@@ -192,15 +194,23 @@ func (api *OrchestratorAPI) handleListAgents(w http.ResponseWriter, r *http.Requ
 			}
 		}
 
-		if userAgents, err := api.userAgentAPI.storage.ListUserAgents(r.Context(), userID); err != nil {
-			logger.Warnf("[OrchestratorAPI] list user agents failed: %v", err)
+		if allowAllRead {
+			if allAgents, err := api.userAgentAPI.storage.ListUserAgents(r.Context(), ""); err != nil {
+				logger.Warnf("[OrchestratorAPI] list all user agents failed: %v", err)
+			} else {
+				appendPublished(allAgents)
+			}
 		} else {
-			appendPublished(userAgents)
-		}
-		if systemAgents, err := api.userAgentAPI.storage.ListUserAgents(r.Context(), "system"); err != nil {
-			logger.Warnf("[OrchestratorAPI] list system agents failed: %v", err)
-		} else {
-			appendPublished(systemAgents)
+			if userAgents, err := api.userAgentAPI.storage.ListUserAgents(r.Context(), userID); err != nil {
+				logger.Warnf("[OrchestratorAPI] list user agents failed: %v", err)
+			} else {
+				appendPublished(userAgents)
+			}
+			if systemAgents, err := api.userAgentAPI.storage.ListUserAgents(r.Context(), "system"); err != nil {
+				logger.Warnf("[OrchestratorAPI] list system agents failed: %v", err)
+			} else {
+				appendPublished(systemAgents)
+			}
 		}
 	}
 
@@ -398,6 +408,16 @@ func (api *OrchestratorAPI) handleListWorkflows(w http.ResponseWriter, r *http.R
 	logger.Infof("[ListWorkflows] 开始获取工作流列表")
 
 	ctx := r.Context()
+	userID, ok := authenticatedUserID(r)
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.read", authz.ScopeOwn, userID, false); !allowed {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	allowReadAll := hasAllScopeAccess(r, "orchestrator.workflow.read")
 
 	type DraftWorkflowSummary struct {
 		ID         string `json:"id"`
@@ -418,21 +438,42 @@ func (api *OrchestratorAPI) handleListWorkflows(w http.ResponseWriter, r *http.R
 
 	db, dbErr := storage.GetMySQLStorage()
 	if dbErr == nil {
-		dbWorkflows, err := db.ListWorkflows(ctx, "")
-		if err == nil {
-			for _, wf := range dbWorkflows {
-				response.Saved = append(response.Saved, WorkflowSummary{
-					ID:        wf.WorkflowID,
-					Name:      wf.Name,
-					UpdatedAt: wf.UpdatedAt.Format(time.RFC3339),
-				})
+		saved := make([]storage.WorkflowSummary, 0)
+		if allowReadAll {
+			dbWorkflows, err := db.ListWorkflowsScoped(ctx, userID, true)
+			if err == nil {
+				saved = append(saved, dbWorkflows...)
 			}
+		} else {
+			if own, err := db.ListWorkflows(ctx, userID); err == nil {
+				saved = append(saved, own...)
+			}
+			if systemWF, err := db.ListWorkflows(ctx, "system"); err == nil {
+				saved = append(saved, systemWF...)
+			}
+		}
+
+		seen := make(map[string]struct{}, len(saved))
+		for _, wf := range saved {
+			if _, ok := seen[wf.WorkflowID]; ok {
+				continue
+			}
+			seen[wf.WorkflowID] = struct{}{}
+			response.Saved = append(response.Saved, WorkflowSummary{
+				ID:        wf.WorkflowID,
+				Name:      wf.Name,
+				UpdatedAt: wf.UpdatedAt.Format(time.RFC3339),
+			})
 		}
 	}
 
 	drafts, err := storage.GetAllDraftWorkflows(ctx)
 	if err == nil {
 		for _, draft := range drafts {
+			owner := strings.TrimSpace(draft.UserID)
+			if !allowReadAll && owner != strings.TrimSpace(userID) && owner != "system" {
+				continue
+			}
 			ttl, _ := storage.GetDraftTTL(ctx, draft.WorkflowID)
 			ttlMinutes := int(ttl.Minutes())
 			if ttlMinutes < 0 {
@@ -489,9 +530,24 @@ func (api *OrchestratorAPI) handleGetWorkflow(w http.ResponseWriter, r *http.Req
 	logger.Infof("[GetWorkflow] 获取工作流: %s", workflowID)
 
 	ctx := r.Context()
+	userID, ok := authenticatedUserID(r)
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.read", authz.ScopeOwn, userID, false); !allowed {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	allowReadAll := hasAllScopeAccess(r, "orchestrator.workflow.read")
 
 	draft, err := storage.GetDraftWorkflow(ctx, workflowID)
 	if err == nil && draft != nil {
+		owner := strings.TrimSpace(draft.UserID)
+		if !allowReadAll && owner != strings.TrimSpace(userID) && owner != "system" {
+			http.Error(w, "workflow not found", http.StatusNotFound)
+			return
+		}
 		logger.Infof("[GetWorkflow] 从 Redis 草稿获取: %s", workflowID)
 
 		var nodes []NodeDefinition
@@ -542,6 +598,11 @@ func (api *OrchestratorAPI) handleGetWorkflow(w http.ResponseWriter, r *http.Req
 	dbWorkflow, err := db.GetWorkflow(ctx, workflowID)
 	if err != nil {
 		logger.Errorf("[GetWorkflow] 从数据库获取失败: %v", err)
+		http.Error(w, "workflow not found", http.StatusNotFound)
+		return
+	}
+	owner := strings.TrimSpace(dbWorkflow.UserID)
+	if !allowReadAll && owner != strings.TrimSpace(userID) && owner != "system" {
 		http.Error(w, "workflow not found", http.StatusNotFound)
 		return
 	}
@@ -644,6 +705,15 @@ func convertMappingFromStorage(m map[string]interface{}) map[string]string {
 func (api *OrchestratorAPI) handlePutWorkflow(w http.ResponseWriter, r *http.Request, workflowID string) {
 	logger.Infof("[PutWorkflow] ========== 开始处理工作流请求（Redis 草稿）==========")
 	logger.Infof("[PutWorkflow] workflowID: %s", workflowID)
+	userID, ok := authenticatedUserID(r)
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, userID, false); !allowed {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 
 	var workflow WorkflowDefinition
 	if err := json.NewDecoder(r.Body).Decode(&workflow); err != nil {
@@ -663,6 +733,7 @@ func (api *OrchestratorAPI) handlePutWorkflow(w http.ResponseWriter, r *http.Req
 
 	draft := &storage.DraftWorkflow{
 		WorkflowID:  workflowID,
+		UserID:      userID,
 		Name:        workflow.Name,
 		Description: workflow.Description,
 		StartNodeID: workflow.StartNodeId,
@@ -671,6 +742,22 @@ func (api *OrchestratorAPI) handlePutWorkflow(w http.ResponseWriter, r *http.Req
 	}
 
 	ctx := r.Context()
+	allowManageAll := hasAllScopeAccess(r, "orchestrator.workflow.manage")
+	if db, dbErr := storage.GetMySQLStorage(); dbErr == nil {
+		if existing, getErr := db.GetWorkflowScoped(ctx, workflowID, userID, allowManageAll); getErr == nil && existing != nil {
+			if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, existing.UserID, false); !allowed {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+		}
+	}
+	if existingDraft, draftErr := storage.GetDraftWorkflow(ctx, workflowID); draftErr == nil && existingDraft != nil {
+		owner := strings.TrimSpace(existingDraft.UserID)
+		if owner != "" && !allowManageAll && owner != strings.TrimSpace(userID) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
 	if err := storage.SaveDraftWorkflow(ctx, workflowID, draft); err != nil {
 		logger.Errorf("[PutWorkflow] 保存到 Redis 失败: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -703,8 +790,25 @@ func (api *OrchestratorAPI) handlePutWorkflow(w http.ResponseWriter, r *http.Req
 func (api *OrchestratorAPI) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request, workflowID string) {
 	logger.Infof("[DeleteWorkflow] ========== 开始处理删除请求 ==========")
 	logger.Infof("[DeleteWorkflow] workflowID: %s", workflowID)
+	userID, ok := authenticatedUserID(r)
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, userID, false); !allowed {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	allowManageAll := hasAllScopeAccess(r, "orchestrator.workflow.manage")
 
 	ctx := r.Context()
+	if draft, err := storage.GetDraftWorkflow(ctx, workflowID); err == nil && draft != nil {
+		owner := strings.TrimSpace(draft.UserID)
+		if owner != "" && !allowManageAll && owner != strings.TrimSpace(userID) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
 
 	storage.DeleteDraftWorkflow(ctx, workflowID)
 	logger.Infof("[DeleteWorkflow] 已从 Redis 草稿中删除")
@@ -713,7 +817,7 @@ func (api *OrchestratorAPI) handleDeleteWorkflow(w http.ResponseWriter, r *http.
 	if err != nil {
 		logger.Errorf("[DeleteWorkflow] MySQL 存储不可用: %v", err)
 	} else {
-		if err := db.DeleteWorkflow(ctx, workflowID); err != nil {
+		if err := db.DeleteWorkflowScoped(ctx, workflowID, userID, allowManageAll); err != nil {
 			logger.Errorf("[DeleteWorkflow] 从数据库删除失败: %v", err)
 		} else {
 			logger.Infof("[DeleteWorkflow] 成功从数据库删除: workflowId=%s", workflowID)

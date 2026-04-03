@@ -70,6 +70,10 @@ export interface MCPStartResponse {
   tools: MCPServerTool[]
 }
 
+export interface MCPStopResponse {
+  stopped: boolean
+}
+
 export interface CreateUserToolRequest {
   toolId: string
   name: string
@@ -102,6 +106,12 @@ export async function listMCPTools(toolId: string): Promise<MCPServerTool[]> {
 
 export async function startMCPServer(toolId: string): Promise<MCPStartResponse> {
   return requestJson<MCPStartResponse>(`/v1/orchestrator/user-tools/${encodeURIComponent(toolId)}/mcp-start`, {
+    method: 'POST',
+  })
+}
+
+export async function stopMCPServer(toolId: string): Promise<MCPStopResponse> {
+  return requestJson<MCPStopResponse>(`/v1/orchestrator/user-tools/${encodeURIComponent(toolId)}/mcp-stop`, {
     method: 'POST',
   })
 }

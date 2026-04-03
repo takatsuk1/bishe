@@ -9,10 +9,10 @@ dashscope:
 llm:
   url: https://dashscope.aliyuncs.com/compatible-mode/v1/
   apikey: sk-5796edd8954b4227971d376c9007a699
-  reasoning_model: qwen3.5-122b-a10b
-  chat_model: qwen3.5-122b-a10b
-  intent_model: qwen3.5-122b-a10b # 意图识别模型
-  video_model: qwen3.5-122b-a10b # 视频分析模型
+  reasoning_model: qwen3.5-35b-a3b
+  chat_model: qwen3.5-35b-a3b
+  intent_model: qwen3.5-35b-a3b # 意图识别模型
+  video_model: qwen3.5-35b-a3b # 视频分析模型
   index_model: text-embedding-v4 #向量模型
 langfuse:
   name: go-manus

@@ -220,6 +220,7 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.ExecutionRequest) (orchestrator.ExecutionResult, error) {
 	taskID, _ := req.Payload["task_id"].(string)
 	query, _ := req.Payload["query"].(string)
+	logger.Infof("[TRACE] deepresearch.node_input task=%s node=%s type=%s query_len=%d payload=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, len(strings.TrimSpace(query)), snapshotAnyForLog(req.Payload, 2000))
 
 	var (
 		output map[string]any
@@ -228,7 +229,14 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 
 	switch req.NodeType {
 	case orchestrator.NodeTypeChatModel:
-		output, err = w.agent.callChatModel(ctx, taskID, query, req.NodeConfig, req.Payload)
+		queryForNode := query
+		switch strings.TrimSpace(req.NodeID) {
+		case "N_judge":
+			queryForNode = buildJudgeQuery(req.Payload)
+		case "N_extract_keywords":
+			queryForNode = buildKeywordExtractionQuery(req.Payload)
+		}
+		output, err = w.agent.callChatModel(ctx, taskID, queryForNode, req.NodeConfig, req.Payload)
 	case orchestrator.NodeTypeTool:
 		output, err = w.agent.callTool(ctx, taskID, query, req.NodeConfig, req.Payload)
 	default:
@@ -239,8 +247,10 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 		output = map[string]any{"response": response}
 	}
 	if err != nil {
+		logger.Infof("[TRACE] deepresearch.node_error task=%s node=%s type=%s err=%v", taskID, strings.TrimSpace(req.NodeID), req.NodeType, err)
 		return orchestrator.ExecutionResult{}, err
 	}
+	logger.Infof("[TRACE] deepresearch.node_output task=%s node=%s type=%s output=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, snapshotAnyForLog(output, 2000))
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
@@ -322,6 +332,11 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 		params["task_id"] = taskID
 	}
 	if strings.EqualFold(toolName, "tavily") {
+		if extractOut, ok := payload["N_extract_keywords"].(map[string]any); ok {
+			if extracted := strings.TrimSpace(fmt.Sprint(extractOut["response"])); extracted != "" {
+				params["query"] = extracted
+			}
+		}
 		if _, ok := params["api_key"]; !ok {
 			params["api_key"] = a.tavilyAPIKey
 		}
@@ -332,7 +347,9 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 			params["max_results"] = 5
 		}
 		q := strings.TrimSpace(fmt.Sprint(params["query"]))
+		orig := extractOriginalQuestion(payload)
 		q = trimForTavilyQuery(q)
+		q = anchorSearchQuery(q, orig)
 		params["query"] = q
 		round := extractLoopRound(payload)
 		if round > 0 {
@@ -833,6 +850,28 @@ func truncateText(input string, max int) string {
 	return strings.TrimSpace(input[:max]) + "..."
 }
 
+func snapshotAnyForLog(v any, maxLen int) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if maxLen > 0 && len(s) > maxLen {
+			return s[:maxLen] + "...(truncated)"
+		}
+		if s == "" {
+			return "<empty>"
+		}
+		return s
+	}
+	s := strings.TrimSpace(string(b))
+	if maxLen > 0 && len(s) > maxLen {
+		return s[:maxLen] + "...(truncated)"
+	}
+	if s == "" {
+		return "<empty>"
+	}
+	return s
+}
+
 func normalizeBoolResponse(in string) string {
 	s := strings.ToLower(strings.TrimSpace(in))
 	if s == "" {
@@ -857,6 +896,12 @@ func normalizeBoolResponse(in string) string {
 
 func trimForTavilyQuery(in string) string {
 	q := strings.TrimSpace(in)
+	if strings.HasPrefix(q, "map[") && strings.HasSuffix(q, "]") {
+		if i := strings.Index(q, "response:"); i >= 0 {
+			q = strings.TrimSpace(q[i+len("response:"):])
+			q = strings.TrimSuffix(q, "]")
+		}
+	}
 	if i := strings.LastIndex(q, "=== 当前问题 ==="); i >= 0 {
 		q = strings.TrimSpace(q[i+len("=== 当前问题 ==="):])
 	}
@@ -907,6 +952,176 @@ func simplifyKeywordQuery(in string) string {
 		return in
 	}
 	return strings.Join(unique, " ")
+}
+
+func buildJudgeQuery(payload map[string]any) string {
+	base := "你是检索评估器。请基于当前已检索信息，判断是否已经足够回答用户问题。仅输出 true 或 false，不要输出任何其它内容。"
+	orig := extractOriginalQuestion(payload)
+	evidence := extractLatestSearchSnippet(payload)
+	if evidence == "" {
+		return base + "\n\n用户问题：\n" + orig
+	}
+	return base + "\n\n用户问题：\n" + orig + "\n\n已检索信息（摘要）：\n" + evidence
+}
+
+func buildKeywordExtractionQuery(payload map[string]any) string {
+	orig := extractOriginalQuestion(payload)
+	evidence := extractLatestSearchSnippet(payload)
+	if evidence == "" {
+		return "当前信息不足。请围绕用户原始问题提取下一轮联网检索关键词。\n" +
+			"要求：\n" +
+			"1) 必须包含用户问题中的核心实体或专有名词。\n" +
+			"2) 禁止输出泛词（如：相关信息、背景信息、待确认主题、具体查询目标）。\n" +
+			"3) 只输出关键词，使用分号分隔，不要输出其他内容。\n\n" +
+			"用户问题：\n" + orig
+	}
+	return "请基于用户问题与已检索信息，提取下一轮更具体的联网检索关键词。\n" +
+		"要求：\n" +
+		"1) 必须包含用户问题中的核心实体或专有名词。\n" +
+		"2) 必须体现信息缺口（如创始人、业务、官网、最新动态、产品）。\n" +
+		"3) 禁止输出泛词（如：相关信息、背景信息、待确认主题、具体查询目标）。\n" +
+		"4) 只输出关键词，使用分号分隔，不要输出其他内容。\n\n" +
+		"用户问题：\n" + orig + "\n\n已检索信息（摘要）：\n" + evidence
+}
+
+func extractOriginalQuestion(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	if raw := strings.TrimSpace(fmt.Sprint(payload["input"])); raw != "" && raw != "<nil>" {
+		if q := extractCurrentQuestionSection(raw); q != "" {
+			return q
+		}
+	}
+	if raw := strings.TrimSpace(fmt.Sprint(payload["text"])); raw != "" && raw != "<nil>" {
+		if q := extractCurrentQuestionSection(raw); q != "" {
+			return q
+		}
+	}
+	if raw := strings.TrimSpace(fmt.Sprint(payload["query"])); raw != "" && raw != "<nil>" {
+		if q := extractCurrentQuestionSection(raw); q != "" {
+			return q
+		}
+		return raw
+	}
+	return ""
+}
+
+func extractCurrentQuestionSection(in string) string {
+	s := strings.TrimSpace(in)
+	if s == "" {
+		return ""
+	}
+	if i := strings.LastIndex(s, "=== 当前问题 ==="); i >= 0 {
+		q := strings.TrimSpace(s[i+len("=== 当前问题 ==="):])
+		if q != "" {
+			return q
+		}
+	}
+	if i := strings.LastIndex(s, "用户:"); i >= 0 {
+		q := strings.TrimSpace(s[i+len("用户:"):])
+		if q != "" {
+			return q
+		}
+	}
+	return s
+}
+
+func extractLatestSearchSnippet(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	tavilyOut, ok := payload["N_tavily"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	result, ok := tavilyOut["result"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	jsonMap, ok := result["json"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	items, ok := jsonMap["results"].([]any)
+	if !ok || len(items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	max := len(items)
+	if max > 3 {
+		max = 3
+	}
+	for i := 0; i < max; i++ {
+		m, ok := items[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		title := strings.TrimSpace(fmt.Sprint(m["title"]))
+		content := truncateText(strings.TrimSpace(fmt.Sprint(m["content"])), 180)
+		if title == "" && content == "" {
+			continue
+		}
+		if title != "" {
+			b.WriteString("- ")
+			b.WriteString(title)
+			if content != "" {
+				b.WriteString(": ")
+				b.WriteString(content)
+			}
+			b.WriteString("\n")
+			continue
+		}
+		b.WriteString("- ")
+		b.WriteString(content)
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func anchorSearchQuery(query string, original string) string {
+	q := strings.TrimSpace(query)
+	orig := strings.TrimSpace(original)
+	if q == "" {
+		return orig
+	}
+	if isGenericKeywordQuery(q) {
+		if orig != "" {
+			return orig
+		}
+		return q
+	}
+	if orig == "" {
+		return q
+	}
+	if strings.Contains(q, orig) || strings.Contains(orig, q) {
+		return q
+	}
+	if len([]rune(q)) <= 40 {
+		return strings.TrimSpace(orig + " " + q)
+	}
+	return q
+}
+
+func isGenericKeywordQuery(in string) bool {
+	s := strings.TrimSpace(strings.ToLower(in))
+	if s == "" {
+		return true
+	}
+	genericPhrases := []string{
+		"待确认主题", "具体查询目标", "补充相关背景", "相关信息", "背景信息", "更多信息",
+		"general", "background", "topic", "information",
+	}
+	for _, g := range genericPhrases {
+		if strings.Contains(s, strings.ToLower(g)) {
+			return true
+		}
+	}
+	meaningful := strings.TrimSpace(strings.NewReplacer(";", "", "；", "", ",", "", "，", "", " ", "").Replace(s))
+	if len([]rune(meaningful)) <= 3 {
+		return true
+	}
+	return false
 }
 
 func extractLoopRound(payload map[string]any) int {

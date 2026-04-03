@@ -61,7 +61,12 @@ func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, authResponse{Error: err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, authResponse{User: user, Tokens: tokens})
+	roles, err := a.svc.GetUserRoleCodes(r.Context(), user.UserID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, authResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, authResponse{User: user, Tokens: tokens, Roles: roles, PrimaryRole: pickPrimaryRole(roles)})
 }
 
 func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +88,12 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, authResponse{Error: err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, authResponse{User: user, Tokens: tokens})
+	roles, err := a.svc.GetUserRoleCodes(r.Context(), user.UserID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, authResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, authResponse{User: user, Tokens: tokens, Roles: roles, PrimaryRole: pickPrimaryRole(roles)})
 }
 
 func (a *API) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +115,12 @@ func (a *API) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, authResponse{Error: err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, authResponse{User: user, Tokens: tokens})
+	roles, err := a.svc.GetUserRoleCodes(r.Context(), user.UserID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, authResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, authResponse{User: user, Tokens: tokens, Roles: roles, PrimaryRole: pickPrimaryRole(roles)})
 }
 
 func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {

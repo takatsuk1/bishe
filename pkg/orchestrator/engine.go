@@ -322,6 +322,7 @@ func (e *engine) executeRun(ctx context.Context, wf *Workflow, run *workflowRun,
 	if shared == nil {
 		shared = make(map[string]any)
 	}
+	seedInputQueryHistory(shared)
 	// 准备节点结果
 	results := make([]NodeRunResult, 0, len(wf.Nodes))
 	currentNodeID := wf.StartNodeID
@@ -370,6 +371,7 @@ func (e *engine) executeRun(ctx context.Context, wf *Workflow, run *workflowRun,
 		// 执行节点
 		nodeRes, nextNodeID, execErr := handler(ctx, e, wf, run, node, nextIndex, shared)
 		durationMs := time.Since(nodeStartedAt).Milliseconds()
+		updateSharedOutputState(shared, node.ID, nodeRes.Output)
 		results = append(results, nodeRes)
 		if execErr != nil {
 			e.emitNodeFailed(ctx, run, wf.ID, node, nodeRes, execErr.Error(), durationMs)
@@ -411,9 +413,13 @@ func preInputNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *workf
 	nextIndex map[string][]string, shared map[string]any) (NodeRunResult, string, error) {
 	_ = ctx
 	e.setRunProgress(run, node.ID, "")
-	query := strings.TrimSpace(composePreInputQuery(node.PreInput, shared))
+	query := strings.TrimSpace(composeNodeInput(node.PreInput, selectNodeInputText(node, shared)))
 	if query == "" {
-		query = strings.TrimSpace(fmt.Sprint(shared["text"]))
+		query = firstNonEmpty(
+			strings.TrimSpace(fmt.Sprint(shared["query"])),
+			strings.TrimSpace(fmt.Sprint(shared["text"])),
+			strings.TrimSpace(fmt.Sprint(shared["input"])),
+		)
 	}
 	if query != "" {
 		shared["query"] = query
@@ -544,9 +550,6 @@ func conditionNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *work
 	_ = ctx
 	// 设置运行进度
 	e.setRunProgress(run, node.ID, "")
-	if s := strings.TrimSpace(node.PreInput); s != "" {
-		shared["query"] = composePreInputQuery(s, shared)
-	}
 	// 评估条件
 	matched := evaluateConditionNode(node, shared)
 	// 解析下一个节点
@@ -566,9 +569,6 @@ func loopNodeHandler(ctx context.Context, e *engine, wf *Workflow, run *workflow
 	_ = ctx
 	// 设置运行进度
 	e.setRunProgress(run, node.ID, "")
-	if s := strings.TrimSpace(node.PreInput); s != "" {
-		shared["query"] = composePreInputQuery(s, shared)
-	}
 	// 计算迭代次数
 	iterKey := fmt.Sprintf("__loop_iter_%s", node.ID)
 	iter, _ := shared[iterKey].(int)
@@ -620,8 +620,11 @@ func (e *engine) executeTaskNode(ctx context.Context, wf *Workflow, run *workflo
 	if payload == nil {
 		payload = make(map[string]any)
 	}
-	if s := strings.TrimSpace(node.PreInput); s != "" {
-		payload["query"] = composePreInputQuery(s, shared)
+	payload["query"] = composeNodeInput(node.PreInput, selectNodeInputText(node, shared))
+	if _, ok := payload["query"]; !ok || strings.TrimSpace(fmt.Sprint(payload["query"])) == "" {
+		if selected := strings.TrimSpace(selectNodeInputText(node, shared)); selected != "" {
+			payload["query"] = selected
+		}
 	}
 	// 处理元数据
 	if node.Metadata != nil {
@@ -817,7 +820,7 @@ func (e *engine) emitNodeStarted(ctx context.Context, run *workflowRun, workflow
 		NodeID:        node.ID,
 		EventType:     monitor.EventTypeNodeStarted,
 		Status:        monitor.StatusRunning,
-		Message:       fmt.Sprintf("node %s started", node.ID),
+		Message:       fmt.Sprintf("node %s (%s) started", node.ID, node.Type),
 		InputSnapshot: shared,
 	})
 
@@ -856,9 +859,9 @@ func (e *engine) emitNodeStarted(ctx context.Context, run *workflowRun, workflow
 			UserID:     run.userID,
 			AgentID:    node.AgentID,
 			NodeID:     node.ID,
-			EventType:  monitor.EventTypeAgentCalled,
+			EventType:  monitor.EventTypeModelCalled,
 			Status:     monitor.StatusRunning,
-			Message:    fmt.Sprintf("agent called by node %s", node.ID),
+			Message:    fmt.Sprintf("chat model called by node %s", node.ID),
 		})
 	}
 }
@@ -876,7 +879,7 @@ func (e *engine) emitNodeFinished(ctx context.Context, run *workflowRun, workflo
 		NodeID:         node.ID,
 		EventType:      monitor.EventTypeNodeFinished,
 		Status:         monitor.StatusSucceeded,
-		Message:        fmt.Sprintf("node %s finished", node.ID),
+		Message:        fmt.Sprintf("node %s (%s) finished", node.ID, node.Type),
 		OutputSnapshot: nodeRes.Output,
 		DurationMs:     durationMs,
 	})
@@ -912,7 +915,7 @@ func (e *engine) emitNodeFailed(ctx context.Context, run *workflowRun, workflowI
 		NodeID:         node.ID,
 		EventType:      monitor.EventTypeNodeFailed,
 		Status:         monitor.StatusFailed,
-		Message:        fmt.Sprintf("node %s failed", node.ID),
+		Message:        fmt.Sprintf("node %s (%s) failed", node.ID, node.Type),
 		OutputSnapshot: nodeRes.Output,
 		ErrorMessage:   errMsg,
 		DurationMs:     durationMs,
@@ -1185,6 +1188,10 @@ func toFloat(v any) (float64, bool) {
 }
 
 func resolveConditionOperand(cfg map[string]any, shared map[string]any, side string) any {
+	if side == "left" {
+		return resolveConditionLeftOperand(shared)
+	}
+
 	typeKey := side + "_type"
 	valueKey := side + "_value"
 	t, _ := cfg[typeKey].(string)
@@ -1193,18 +1200,124 @@ func resolveConditionOperand(cfg map[string]any, shared map[string]any, side str
 	if !ok {
 		return nil
 	}
-	if t == "path" {
-		if path, ok := v.(string); ok {
-			if rv, exists := resolveSharedPath(shared, path); exists {
-				return rv
-			}
-		}
-		return nil
-	}
 	if t == "bool" {
 		return toBool(v)
 	}
-	return v
+	return strings.TrimSpace(fmt.Sprint(v))
+}
+
+func resolveConditionLeftOperand(shared map[string]any) any {
+	if out, ok := shared["latest_output"].(map[string]any); ok {
+		if v, exists := out["response"]; exists {
+			return v
+		}
+		if v, exists := out["result"]; exists {
+			return v
+		}
+		if v, exists := out["query"]; exists {
+			return v
+		}
+		return strings.TrimSpace(fmt.Sprint(out))
+	}
+	return ""
+}
+
+func updateSharedOutputState(shared map[string]any, nodeID string, output map[string]any) {
+	if shared == nil || nodeID == "" || output == nil {
+		return
+	}
+
+	shared["latest_output"] = cloneAnyMap(output)
+	history, _ := shared["history_outputs"].([]any)
+	history = append(history, map[string]any{
+		"node_id": nodeID,
+		"output":  cloneAnyMap(output),
+	})
+	shared["history_outputs"] = history
+}
+
+func seedInputQueryHistory(shared map[string]any) {
+	if shared == nil {
+		return
+	}
+
+	q := firstNonEmptyString(
+		mapString(shared, "query"),
+		mapString(shared, "text"),
+		mapString(shared, "input"),
+	)
+	if q == "" {
+		return
+	}
+
+	history, _ := shared["history_outputs"].([]any)
+	if len(history) > 0 {
+		if first, ok := history[0].(map[string]any); ok {
+			if nodeID, _ := first["node_id"].(string); nodeID == "__input__" {
+				return
+			}
+		}
+	}
+
+	entry := map[string]any{
+		"node_id": "__input__",
+		"output":  map[string]any{"query": q},
+	}
+	history = append([]any{entry}, history...)
+	shared["history_outputs"] = history
+}
+
+func selectNodeInputText(node Node, shared map[string]any) string {
+	if node.Type == NodeTypeLoop {
+		return ""
+	}
+
+	source := "previous"
+	if node.Type == NodeTypeCondition {
+		source = "previous"
+	} else if node.Config != nil {
+		if v, ok := node.Config["input_source"].(string); ok {
+			s := strings.ToLower(strings.TrimSpace(v))
+			if s == "history" {
+				source = "history"
+			}
+		}
+	}
+
+	if source == "history" {
+		history, _ := shared["history_outputs"].([]any)
+		if len(history) == 0 {
+			return ""
+		}
+		parts := make([]string, 0, len(history))
+		for _, item := range history {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			out, ok := entry["output"].(map[string]any)
+			if !ok {
+				continue
+			}
+			parts = append(parts, strings.TrimSpace(fmt.Sprint(out)))
+		}
+		return strings.TrimSpace(strings.Join(parts, "\n"))
+	}
+
+	if out, ok := shared["latest_output"].(map[string]any); ok {
+		return strings.TrimSpace(fmt.Sprint(out))
+	}
+
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func resolveSharedPath(shared map[string]any, path string) (any, bool) {
@@ -1264,53 +1377,16 @@ func resolveEdgeTargetByLabels(wf *Workflow, from string, labels []string) strin
 	return ""
 }
 
-func composePreInputQuery(preInput string, shared map[string]any) string {
-	prefix := sanitizePreInput(preInput)
-	base := buildSharedBaseQuery(shared)
-	if prefix == "" {
-		return base
+func composeNodeInput(preInput string, source string) string {
+	left := strings.TrimSpace(preInput)
+	right := strings.TrimSpace(source)
+	if left == "" {
+		return right
 	}
-	if base == "" {
-		return prefix
+	if right == "" {
+		return left
 	}
-	return prefix + "\n" + base
-}
-
-func sanitizePreInput(preInput string) string {
-	trimmed := strings.TrimSpace(preInput)
-	if trimmed == "" {
-		return ""
-	}
-	for {
-		start := strings.Index(trimmed, "{{")
-		if start < 0 {
-			break
-		}
-		end := strings.Index(trimmed[start+2:], "}}")
-		if end < 0 {
-			break
-		}
-		trimmed = trimmed[:start] + trimmed[start+2+end+2:]
-	}
-	return strings.TrimSpace(trimmed)
-}
-
-func buildSharedBaseQuery(shared map[string]any) string {
-	userText := strings.TrimSpace(fmt.Sprint(shared["text"]))
-	prevQuery := strings.TrimSpace(fmt.Sprint(shared["query"]))
-	inputText := strings.TrimSpace(fmt.Sprint(shared["input"]))
-
-	parts := make([]string, 0, 3)
-	if userText != "" {
-		parts = append(parts, userText)
-	}
-	if prevQuery != "" && prevQuery != userText {
-		parts = append(parts, prevQuery)
-	}
-	if inputText != "" && inputText != userText && inputText != prevQuery {
-		parts = append(parts, inputText)
-	}
-	return strings.TrimSpace(strings.Join(parts, "\n"))
+	return left + "\n" + right
 }
 
 func extractQueryFromNodeOutput(output map[string]any) string {

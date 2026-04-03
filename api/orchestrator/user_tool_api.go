@@ -26,8 +26,49 @@ func NewUserToolAPI(mysqlStorage *storage.MySQLStorage) *UserToolAPI {
 		if err := api.seedBuiltInTools(context.Background()); err != nil {
 			logger.Warnf("[UserToolAPI] seed built-in tools failed: %v", err)
 		}
+		go api.warmupStdioMCPTools()
 	}
 	return api
+}
+
+func (api *UserToolAPI) warmupStdioMCPTools() {
+	if api.storage == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	defs, err := api.storage.ListUserTools(ctx, "")
+	if err != nil {
+		logger.Warnf("[UserToolAPI] warmup stdio tools list failed: %v", err)
+		return
+	}
+
+	manager := tools.GetStdioMCPManager()
+	for _, def := range defs {
+		if strings.TrimSpace(def.ToolType) != string(tools.ToolTypeMCP) {
+			continue
+		}
+		if getMCPMode(def.Config) != "stdio" {
+			continue
+		}
+		serverName, serverCfg, parseErr := extractMCPStdioServer(def.Config)
+		if parseErr != nil {
+			logger.Warnf("[UserToolAPI] warmup parse config failed tool_id=%s err=%v", def.ToolID, parseErr)
+			continue
+		}
+		command, args, resolveErr := tools.EnsureUvToolInstalled(ctx, serverCfg.Command, serverCfg.Args)
+		if resolveErr != nil {
+			logger.Warnf("[UserToolAPI] warmup resolve tool failed tool_id=%s err=%v", def.ToolID, resolveErr)
+			continue
+		}
+		if _, startErr := manager.Start(ctx, def.ToolID, command, args); startErr != nil {
+			logger.Warnf("[UserToolAPI] warmup start failed tool_id=%s server=%s err=%v", def.ToolID, serverName, startErr)
+			continue
+		}
+		logger.Infof("[UserToolAPI] warmup started tool_id=%s server=%s", def.ToolID, serverName)
+	}
 }
 
 func (api *UserToolAPI) seedBuiltInTools(ctx context.Context) error {
@@ -338,6 +379,14 @@ func (api *UserToolAPI) handleUserToolByID(w http.ResponseWriter, r *http.Reques
 		api.handleStartMCPTool(w, r, parts[0])
 		return
 	}
+	if len(parts) >= 2 && parts[1] == "mcp-stop" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		api.handleStopMCPTool(w, r, parts[0])
+		return
+	}
 
 	toolID := extractIDFromPath(r.URL.Path, "/v1/orchestrator/user-tools/")
 	if toolID == "" {
@@ -520,6 +569,43 @@ func (api *UserToolAPI) handleStartMCPTool(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (api *UserToolAPI) handleStopMCPTool(w http.ResponseWriter, r *http.Request, toolID string) {
+	ctx := r.Context()
+	_, ok := authenticatedUserID(r)
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	if api.storage == nil {
+		http.Error(w, "storage not available", http.StatusInternalServerError)
+		return
+	}
+
+	def, err := api.storage.GetUserTool(ctx, toolID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if _, allowed := authorizeResourceAccess(r, "orchestrator.tool.read", authz.ScopeOwn, def.UserID, def.UserID == "system"); !allowed {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if strings.TrimSpace(def.ToolType) != string(tools.ToolTypeMCP) {
+		http.Error(w, "tool type is not mcp", http.StatusBadRequest)
+		return
+	}
+	if getMCPMode(def.Config) != "stdio" {
+		http.Error(w, "only stdio mcp can be stopped", http.StatusBadRequest)
+		return
+	}
+
+	manager := tools.GetStdioMCPManager()
+	manager.Remove(toolID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"stopped": true})
 }
 
 func listMCPToolsWithClient(ctx context.Context, client *tools.MCPClient) ([]tools.RemoteToolInfo, error) {

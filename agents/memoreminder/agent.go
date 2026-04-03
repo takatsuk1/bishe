@@ -9,6 +9,7 @@ import (
 	internalproto "ai/pkg/protocol"
 	"ai/pkg/storage"
 	internaltm "ai/pkg/taskmanager"
+	"ai/pkg/tools"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -40,6 +41,7 @@ type Agent struct {
 	orchestratorEngine orchestrator.Engine
 	llmClient          *llm.Client
 	chatModel          string
+	JsonFileTool       tools.Tool
 	watcherStarted     bool
 	watcherMutex       sync.Mutex
 }
@@ -49,11 +51,11 @@ type workflowNodeWorker struct {
 }
 
 var memoReminderNodeProgressText = map[string]string{
-	"N_start": "初始化备忘录提醒任务",
-	"N_parse": "解析并结构化提醒信息",
-	"N_save":  "写入提醒到JSON文件",
-	"N_ack":   "生成用户确认回复",
-	"N_end":   "完成提醒录入",
+	"N_start":      "初始化备忘录提醒任务",
+	"N_parse":      "解析并结构化提醒信息",
+	"N_write_json": "写入提醒到JSON文件",
+	"N_ack":        "生成用户确认回复",
+	"N_end":        "完成提醒录入",
 }
 
 const remindersFile = "reminders.json"
@@ -71,6 +73,22 @@ func NewAgent() (*Agent, error) {
 		agent.chatModel = "qwen-3.5-flash"
 	}
 	logger.Infof("[TRACE] memoreminder llm_config url=%s model=%s api_key_set=%t", strings.TrimSpace(cfg.LLM.URL), agent.chatModel, strings.TrimSpace(cfg.LLM.APIKey) != "")
+
+	agent.JsonFileTool = tools.NewMCPTool(
+		"json_file",
+		"本地 JSON 文件读写 MCP 服务",
+		[]tools.ToolParameter{
+			{Name: "action", Type: tools.ParamTypeString, Required: true, Description: "read 或 write"},
+			{Name: "path", Type: tools.ParamTypeString, Required: true, Description: "JSON 文件路径"},
+			{Name: "json", Type: tools.ParamTypeObject, Required: false, Description: "写入 JSON 内容"},
+		},
+		tools.MCPToolConfig{
+			Mode:     "stdio",
+			Command:  "go",
+			Args:     []string{"run", "./tools/jsonfilemcp", "--root", "."},
+			ToolName: "json_file",
+		},
+	)
 
 	engineCfg := orchestrator.Config{
 		DefaultTaskTimeoutSec: cfg.Orchestrator.DefaultTaskTimeoutSec,
@@ -337,15 +355,39 @@ func (a *Agent) startProgressReporter(ctx context.Context, taskID, runID string,
 
 func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.ExecutionRequest) (orchestrator.ExecutionResult, error) {
 	agent := w.agent
+	taskID := strings.TrimSpace(req.TaskID)
+	if taskID == "" {
+		taskID = strings.TrimSpace(fmt.Sprint(req.Payload["task_id"]))
+	}
+	query := strings.TrimSpace(fmt.Sprint(req.Payload["query"]))
+	if query == "" {
+		query = strings.TrimSpace(fmt.Sprint(req.Payload["input"]))
+	}
+	if query == "" {
+		query = strings.TrimSpace(fmt.Sprint(req.Payload["text"]))
+	}
+	logger.Infof("[TRACE] memoreminder.node_input task=%s node=%s type=%s query_len=%d payload=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, len(query), snapshotAnyForLog(req.Payload, 2000))
+
+	var (
+		result orchestrator.ExecutionResult
+		err    error
+	)
 
 	switch req.NodeType {
 	case orchestrator.NodeTypeChatModel:
-		return w.executeChatModel(ctx, agent, req)
+		result, err = w.executeChatModel(ctx, agent, req)
 	case orchestrator.NodeTypeTool:
-		return w.executeSaveTool(ctx, req)
+		result, err = w.executeSaveTool(ctx, req)
 	default:
-		return orchestrator.ExecutionResult{}, fmt.Errorf("unknown node type: %s", req.NodeType)
+		err = fmt.Errorf("unknown node type: %s", req.NodeType)
 	}
+
+	if err != nil {
+		logger.Infof("[TRACE] memoreminder.node_error task=%s node=%s type=%s err=%v", taskID, strings.TrimSpace(req.NodeID), req.NodeType, err)
+		return orchestrator.ExecutionResult{}, err
+	}
+	logger.Infof("[TRACE] memoreminder.node_output task=%s node=%s type=%s output=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, snapshotAnyForLog(result.Output, 2000))
+	return result, nil
 }
 
 func (w *workflowNodeWorker) executeChatModel(ctx context.Context, agent *Agent, req orchestrator.ExecutionRequest) (orchestrator.ExecutionResult, error) {
@@ -477,7 +519,7 @@ func (w *workflowNodeWorker) executeSaveTool(_ context.Context, req orchestrator
 		return orchestrator.ExecutionResult{}, err
 	}
 
-	if err := saveReminderToFile(reminder); err != nil {
+	if err := w.agent.saveReminderWithJSONTool(reminder); err != nil {
 		return orchestrator.ExecutionResult{}, fmt.Errorf("save reminder failed: %w", err)
 	}
 	logger.Infof("[TRACE] memoreminder.save_tool done task=%s path=%s id=%s content=%s remind_at=%s",
@@ -585,6 +627,28 @@ func truncateForLog(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "...(truncated)"
+}
+
+func snapshotAnyForLog(v any, maxLen int) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if maxLen > 0 && len(s) > maxLen {
+			return s[:maxLen] + "...(truncated)"
+		}
+		if s == "" {
+			return "<empty>"
+		}
+		return s
+	}
+	s := strings.TrimSpace(string(b))
+	if maxLen > 0 && len(s) > maxLen {
+		return s[:maxLen] + "...(truncated)"
+	}
+	if s == "" {
+		return "<empty>"
+	}
+	return s
 }
 
 func parseReminderFromLLMResponse(raw string) (Reminder, error) {
@@ -696,10 +760,18 @@ func buildAckPrompt(payload map[string]any) (string, string) {
 	}
 	savedContent := ""
 	savedTime := ""
-	if saveOut, ok := payload["N_save"].(map[string]any); ok {
+	if saveOut, ok := payload["N_write_json"].(map[string]any); ok {
 		if saved, ok := saveOut["saved"].(map[string]any); ok {
 			savedContent = strings.TrimSpace(fmt.Sprint(saved["content"]))
 			savedTime = strings.TrimSpace(fmt.Sprint(saved["remind_at"]))
+		}
+	}
+	if savedContent == "" && savedTime == "" {
+		if saveOut, ok := payload["N_save"].(map[string]any); ok {
+			if saved, ok := saveOut["saved"].(map[string]any); ok {
+				savedContent = strings.TrimSpace(fmt.Sprint(saved["content"]))
+				savedTime = strings.TrimSpace(fmt.Sprint(saved["remind_at"]))
+			}
 		}
 	}
 	if savedContent == "" {
@@ -762,6 +834,44 @@ func saveReminderToFile(reminder Reminder) error {
 	return saveReminders(reminders)
 }
 
+func (a *Agent) saveReminderWithJSONTool(reminder Reminder) error {
+	if a == nil || a.JsonFileTool == nil {
+		logger.Warnf("[TRACE] memoreminder.json_file fallback reason=nil_tool path=%s", remindersFilePath())
+		return saveReminderToFile(reminder)
+	}
+
+	reminders, err := loadReminders()
+	if err != nil {
+		logger.Warnf("[MemoReminder] load reminders failed before json_file write: %v", err)
+		reminders = []Reminder{}
+	}
+	reminders = append(reminders, reminder)
+
+	payload := make([]map[string]any, 0, len(reminders))
+	for _, item := range reminders {
+		payload = append(payload, map[string]any{
+			"id":        item.ID,
+			"content":   item.Content,
+			"remind_at": item.RemindAt.UTC().Format(time.RFC3339),
+			"script":    item.Script,
+			"reminded":  item.Reminded,
+		})
+	}
+
+	logger.Infof("[TRACE] memoreminder.json_file start path=%s count=%d", remindersFile, len(payload))
+	_, execErr := a.JsonFileTool.Execute(context.Background(), map[string]any{
+		"action": "write",
+		"path":   remindersFile,
+		"json":   payload,
+	})
+	if execErr != nil {
+		logger.Warnf("[TRACE] memoreminder.json_file error path=%s err=%v", remindersFile, execErr)
+		return execErr
+	}
+	logger.Infof("[TRACE] memoreminder.json_file done path=%s count=%d", remindersFile, len(payload))
+	return nil
+}
+
 func buildMemoReminderWorkflow() (*orchestrator.Workflow, error) {
 	wf, err := orchestrator.NewWorkflow(MemoReminderWorkflowID, "memoreminder default workflow")
 	if err != nil {
@@ -784,12 +894,12 @@ func buildMemoReminderWorkflow() (*orchestrator.Workflow, error) {
 		return nil, err
 	}
 	if err = wf.AddNode(orchestrator.Node{
-		ID:       "N_save",
+		ID:       "N_write_json",
 		Type:     orchestrator.NodeTypeTool,
 		AgentID:  MemoReminderWorkflowWorkerID,
 		TaskType: "tool",
 		Config: map[string]any{
-			"tool_name": "save_json",
+			"tool_name": "write_json",
 		},
 		PreInput: "将解析结果写入 reminders.json。",
 	}); err != nil {
@@ -814,10 +924,10 @@ func buildMemoReminderWorkflow() (*orchestrator.Workflow, error) {
 	if err = wf.AddEdge("N_start", "N_parse"); err != nil {
 		return nil, err
 	}
-	if err = wf.AddEdge("N_parse", "N_save"); err != nil {
+	if err = wf.AddEdge("N_parse", "N_write_json"); err != nil {
 		return nil, err
 	}
-	if err = wf.AddEdge("N_save", "N_ack"); err != nil {
+	if err = wf.AddEdge("N_write_json", "N_ack"); err != nil {
 		return nil, err
 	}
 	if err = wf.AddEdge("N_ack", "N_end"); err != nil {

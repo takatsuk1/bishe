@@ -6,6 +6,7 @@ import (
 	"ai/pkg/storage"
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -161,12 +162,50 @@ func startConfiguredUserAgents(cfg *config.MainConfig, projectRoot string) error
 		"host":           true,
 	}
 	usedConfiguredPorts := map[int]string{}
+	configuredUserAgents := map[string]bool{}
+
+	startUserAgent := func(agentName string, serverURL string, port int, agentDir string) error {
+		mainGo := filepath.Join(agentDir, "cmd", "main.go")
+		if _, err := os.Stat(mainGo); err != nil {
+			logger.Warnf("skip auto-start user agent %s: %s not found", agentName, mainGo)
+			return nil
+		}
+
+		cmd := exec.Command("go", "run", "./cmd", "--port", strconv.Itoa(port), "--main-config", mainConfigPath)
+		cmd.Dir = agentDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start user agent %s on port %d: %w", agentName, port, err)
+		}
+		go func(name string, c *exec.Cmd, st *storage.MySQLStorage) {
+			if waitErr := c.Wait(); waitErr != nil {
+				logger.Warnf("user agent %s exited: %v", name, waitErr)
+			}
+			if st != nil {
+				_ = st.UpdateAgentStatus(context.Background(), name, storage.AgentStatusStopped, 0, 0)
+			}
+		}(agentName, cmd, mysqlStorage)
+
+		logger.Infof("user agent %s listening on %s (pid=%d)", agentName, serverURL, cmd.Process.Pid)
+		logger.Infof("Waiting for %s agent card to be ready...", agentName)
+		if err := waitForAgentCard(serverURL, 15*time.Second); err != nil {
+			return err
+		}
+		if mysqlStorage != nil {
+			if err := mysqlStorage.UpdateAgentStatus(context.Background(), agentName, storage.AgentStatusPublished, port, cmd.Process.Pid); err != nil {
+				logger.Warnf("user agent %s db sync failed: %v", agentName, err)
+			}
+		}
+		return nil
+	}
 
 	for _, ag := range cfg.OpenAIConnector.Agents {
 		name := strings.ToLower(strings.TrimSpace(ag.Name))
 		if name == "" || builtin[name] {
 			continue
 		}
+		configuredUserAgents[name] = true
 		serverURL := strings.TrimSpace(ag.ServerURL)
 		if serverURL == "" {
 			logger.Warnf("skip auto-start user agent %s: empty server_url", ag.Name)
@@ -184,40 +223,72 @@ func startConfiguredUserAgents(cfg *config.MainConfig, projectRoot string) error
 		usedConfiguredPorts[port] = ag.Name
 
 		agentDir := filepath.Join(projectRoot, "agents", "user_agents", ag.Name)
-		mainGo := filepath.Join(agentDir, "cmd", "main.go")
-		if _, err := os.Stat(mainGo); err != nil {
-			logger.Warnf("skip auto-start user agent %s: %s not found", ag.Name, mainGo)
-			continue
-		}
-
-		cmd := exec.Command("go", "run", "./cmd", "--port", strconv.Itoa(port), "--main-config", mainConfigPath)
-		cmd.Dir = agentDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("start user agent %s on port %d: %w", ag.Name, port, err)
-		}
-		go func(agentName string, c *exec.Cmd, st *storage.MySQLStorage) {
-			if waitErr := c.Wait(); waitErr != nil {
-				logger.Warnf("user agent %s exited: %v", agentName, waitErr)
-			}
-			if st != nil {
-				_ = st.UpdateAgentStatus(context.Background(), agentName, storage.AgentStatusStopped, 0, 0)
-			}
-		}(ag.Name, cmd, mysqlStorage)
-
-		logger.Infof("user agent %s listening on %s (pid=%d)", ag.Name, serverURL, cmd.Process.Pid)
-		logger.Infof("Waiting for %s agent card to be ready...", ag.Name)
-		if err := waitForAgentCard(serverURL, 15*time.Second); err != nil {
+		if err := startUserAgent(ag.Name, serverURL, port, agentDir); err != nil {
 			return err
 		}
-		if mysqlStorage != nil {
-			if err := mysqlStorage.UpdateAgentStatus(context.Background(), ag.Name, storage.AgentStatusPublished, port, cmd.Process.Pid); err != nil {
-				logger.Warnf("user agent %s db sync failed: %v", ag.Name, err)
+	}
+
+	if mysqlStorage != nil {
+		dbAgents, err := mysqlStorage.ListUserAgents(context.Background(), "")
+		if err != nil {
+			logger.Warnf("load user agents from db for auto-start failed: %v", err)
+			return nil
+		}
+		for _, def := range dbAgents {
+			agentName := strings.TrimSpace(def.AgentID)
+			nameKey := strings.ToLower(agentName)
+			if agentName == "" || builtin[nameKey] || configuredUserAgents[nameKey] {
+				continue
+			}
+			if def.Port <= 0 {
+				allocatedPort, allocErr := findAvailableUserAgentPort(usedConfiguredPorts)
+				if allocErr != nil {
+					logger.Warnf("skip auto-start db user agent %s: invalid persisted port %d and allocate failed: %v", agentName, def.Port, allocErr)
+					continue
+				}
+				logger.Infof("db user agent %s has invalid persisted port %d; assigned fallback port %d", agentName, def.Port, allocatedPort)
+				def.Port = allocatedPort
+			}
+			if existing, exists := usedConfiguredPorts[def.Port]; exists {
+				logger.Warnf("skip auto-start db user agent %s: port %d already used by %s", agentName, def.Port, existing)
+				continue
+			}
+			usedConfiguredPorts[def.Port] = agentName
+
+			agentDir := strings.TrimSpace(def.CodePath)
+			if agentDir == "" {
+				agentDir = filepath.Join(projectRoot, "agents", "user_agents", agentName)
+			} else if !filepath.IsAbs(agentDir) {
+				agentDir = filepath.Join(projectRoot, agentDir)
+			}
+
+			serverURL := fmt.Sprintf("http://127.0.0.1:%d", def.Port)
+			logger.Infof("auto-start db user agent %s status=%s code_path=%s server_url=%s", agentName, def.Status, agentDir, serverURL)
+			if err := startUserAgent(agentName, serverURL, def.Port, agentDir); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+func findAvailableUserAgentPort(usedConfiguredPorts map[int]string) (int, error) {
+	const (
+		basePort = 8200
+		maxPort  = 8999
+	)
+	for port := basePort; port <= maxPort; port++ {
+		if _, exists := usedConfiguredPorts[port]; exists {
+			continue
+		}
+		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err != nil {
+			continue
+		}
+		_ = ln.Close()
+		return port, nil
+	}
+	return 0, fmt.Errorf("no available user-agent port in range %d-%d", basePort, maxPort)
 }
 
 func parsePortFromServerURL(serverURL string) (int, error) {

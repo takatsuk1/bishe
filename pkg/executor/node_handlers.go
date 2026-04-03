@@ -53,7 +53,7 @@ func (e *InterpretiveExecutor) handleEndNode(ctx context.Context, wf *orchestrat
 func (e *InterpretiveExecutor) handlePreInputNode(ctx context.Context, wf *orchestrator.Workflow, node orchestrator.Node, shared map[string]any) (NodeExecutionResult, string, error) {
 	start := time.Now()
 	_ = ctx
-	query := strings.TrimSpace(composePreInputQuery(node.PreInput, shared))
+	query := strings.TrimSpace(composeNodeInput(node.PreInput, selectNodeInputText(node, shared)))
 	if query == "" {
 		query = firstNonEmptyString(
 			stringify(shared["query"]),
@@ -86,10 +86,6 @@ func (e *InterpretiveExecutor) handleToolNode(ctx context.Context, wf *orchestra
 		NodeType: "tool",
 	}
 
-	if s := strings.TrimSpace(node.PreInput); s != "" {
-		shared["query"] = composePreInputQuery(s, shared)
-	}
-
 	toolName := ""
 	if node.Config != nil {
 		if name, ok := node.Config["tool_name"].(string); ok {
@@ -115,6 +111,13 @@ func (e *InterpretiveExecutor) handleToolNode(ctx context.Context, wf *orchestra
 	}
 
 	params := e.buildToolParams(node, shared)
+	if _, ok := params["query"]; !ok {
+		selected := composeNodeInput(node.PreInput, selectNodeInputText(node, shared))
+		if selected = strings.TrimSpace(selected); selected != "" {
+			params["query"] = selected
+		}
+	}
+	params = applyToolRuntimeDefaults(toolName, params, shared)
 	params = normalizeToolParamsByDefinition(params, tool.Info().Parameters)
 	logger.Infof("[Executor] tool params prepared nodeId=%s tool=%s params=%v", node.ID, toolName, summarizeMapTypes(params))
 
@@ -149,10 +152,6 @@ func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orch
 		NodeType: "chat_model",
 	}
 
-	if s := strings.TrimSpace(node.PreInput); s != "" {
-		shared["query"] = composePreInputQuery(s, shared)
-	}
-
 	cfg := config.GetMainConfig()
 	baseURL := cfg.LLM.URL
 	apiKey := cfg.LLM.APIKey
@@ -171,6 +170,7 @@ func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orch
 	}
 
 	query := firstNonEmptyString(
+		composeNodeInput(node.PreInput, selectNodeInputText(node, shared)),
 		stringify(shared["query"]),
 		stringify(shared["text"]),
 		stringify(shared["input"]),
@@ -188,12 +188,22 @@ func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orch
 	}
 
 	client := llm.NewClient(baseURL, apiKey)
+	if boolValueFromAny(shared["_debug_test_exec"]) {
+		logger.Infof("[Executor][TestDebug] chat_model_input nodeId=%s model=%s prompt=%s", node.ID, strings.TrimSpace(model), truncateTextForLog(query, 2000))
+	}
+	logger.Infof("[Executor] chat_model request nodeId=%s model=%s url=%s query_len=%d", node.ID, strings.TrimSpace(model), strings.TrimSpace(baseURL), len(query))
+	llmStart := time.Now()
 	resp, err := client.ChatCompletion(ctx, model, []llm.Message{{Role: "user", Content: query}}, intPtr(512), floatPtr(0.3))
 	if err != nil {
+		logger.Warnf("[Executor] chat_model failed nodeId=%s model=%s elapsed=%s err=%v", node.ID, strings.TrimSpace(model), time.Since(llmStart).Round(time.Millisecond), err)
 		result.State = ExecutionStateFailed
 		result.Error = err.Error()
 		result.Duration = time.Since(start).Milliseconds()
 		return result, "", err
+	}
+	logger.Infof("[Executor] chat_model success nodeId=%s model=%s elapsed=%s", node.ID, strings.TrimSpace(model), time.Since(llmStart).Round(time.Millisecond))
+	if boolValueFromAny(shared["_debug_test_exec"]) {
+		logger.Infof("[Executor][TestDebug] chat_model_output nodeId=%s model=%s response=%s", node.ID, strings.TrimSpace(model), truncateTextForLog(resp, 2000))
 	}
 
 	outputType := "string"
@@ -218,8 +228,11 @@ func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orch
 	result.Duration = time.Since(start).Milliseconds()
 
 	shared[node.ID] = output
-	if q := extractQueryFromOutput(output); q != "" {
-		shared["query"] = q
+	// Bool judge nodes should not replace the conversational query context.
+	if outputType != "bool" {
+		if q := extractQueryFromOutput(output); q != "" {
+			shared["query"] = q
+		}
 	}
 
 	nextNodeID := e.getNextNode(wf, node.ID, "")
@@ -257,10 +270,6 @@ func (e *InterpretiveExecutor) handleConditionNode(ctx context.Context, wf *orch
 	result := NodeExecutionResult{
 		NodeID:   node.ID,
 		NodeType: "condition",
-	}
-
-	if s := strings.TrimSpace(node.PreInput); s != "" {
-		shared["query"] = composePreInputQuery(s, shared)
 	}
 
 	matched := e.evaluateConditionNode(node, shared)
@@ -469,6 +478,56 @@ func normalizeToolParamsByDefinition(params map[string]any, defs []tools.ToolPar
 	return params
 }
 
+func applyToolRuntimeDefaults(toolName string, params map[string]any, shared map[string]any) map[string]any {
+	if params == nil {
+		params = make(map[string]any)
+	}
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	cfg := config.GetMainConfig()
+	if cfg == nil {
+		return params
+	}
+
+	if name == "tavily" {
+		if isBlankParam(params["api_key"]) {
+			if key := strings.TrimSpace(cfg.Tavily.APIKey); key != "" {
+				params["api_key"] = key
+				logger.Infof("[Executor] tool param fallback applied tool=%s field=api_key source=config.tavily.apikey", toolName)
+			}
+		}
+		if isBlankParam(params["query"]) {
+			if q := strings.TrimSpace(stringify(shared["query"])); q != "" {
+				params["query"] = q
+				logger.Infof("[Executor] tool param fallback applied tool=%s field=query source=shared.query", toolName)
+			}
+		}
+	}
+
+	return params
+}
+
+func isBlankParam(v any) bool {
+	if v == nil {
+		return true
+	}
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(s) == ""
+}
+
+func truncateTextForLog(s string, maxLen int) string {
+	s = strings.TrimSpace(s)
+	if maxLen > 0 && len(s) > maxLen {
+		return s[:maxLen] + "...<truncated>"
+	}
+	if s == "" {
+		return "<empty>"
+	}
+	return s
+}
+
 func extractStringCandidate(v any, preferredKey string) (string, bool) {
 	if s, ok := v.(string); ok {
 		return s, true
@@ -641,6 +700,10 @@ func toFloatValue(v any) (float64, bool) {
 }
 
 func resolveConditionValue(cfg map[string]any, shared map[string]any, side string) any {
+	if side == "left" {
+		return resolveConditionLeftValue(shared)
+	}
+
 	typeKey := side + "_type"
 	valueKey := side + "_value"
 	t, _ := cfg[typeKey].(string)
@@ -649,18 +712,67 @@ func resolveConditionValue(cfg map[string]any, shared map[string]any, side strin
 	if !ok {
 		return nil
 	}
-	if t == "path" {
-		if path, ok := v.(string); ok {
-			if rv, exists := resolveSharedValue(shared, path); exists {
-				return rv
-			}
-		}
-		return nil
-	}
 	if t == "bool" {
 		return coerceBool(v)
 	}
-	return v
+	return strings.TrimSpace(fmt.Sprint(v))
+}
+
+func resolveConditionLeftValue(shared map[string]any) any {
+	if out, ok := shared["latest_output"].(map[string]any); ok {
+		if v, exists := out["response"]; exists {
+			return v
+		}
+		if v, exists := out["result"]; exists {
+			return v
+		}
+		if v, exists := out["query"]; exists {
+			return v
+		}
+		return stringify(out)
+	}
+	return ""
+}
+
+func selectNodeInputText(node orchestrator.Node, shared map[string]any) string {
+	if node.Type == orchestrator.NodeTypeLoop {
+		return ""
+	}
+
+	source := "previous"
+	if node.Type == orchestrator.NodeTypeCondition {
+		source = "previous"
+	} else if node.Config != nil {
+		if v, ok := node.Config["input_source"].(string); ok {
+			s := strings.ToLower(strings.TrimSpace(v))
+			if s == "history" {
+				source = "history"
+			}
+		}
+	}
+
+	if source == "history" {
+		history, _ := shared["history_outputs"].([]any)
+		if len(history) == 0 {
+			return ""
+		}
+		parts := make([]string, 0, len(history))
+		for _, item := range history {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if out, ok := entry["output"].(map[string]any); ok {
+				parts = append(parts, stringify(out))
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, "\n"))
+	}
+
+	if out, ok := shared["latest_output"].(map[string]any); ok {
+		return stringify(out)
+	}
+	return ""
 }
 
 func coerceBool(v any) bool {
@@ -693,54 +805,16 @@ func resolveLabeledEdge(wf *orchestrator.Workflow, from string, labels []string)
 	return ""
 }
 
-func composePreInputQuery(preInput string, shared map[string]any) string {
-	prefix := sanitizePreInput(preInput)
-	base := buildSharedBaseQuery(shared)
-	if prefix == "" {
-		return base
+func composeNodeInput(preInput string, source string) string {
+	left := strings.TrimSpace(preInput)
+	right := strings.TrimSpace(source)
+	if left == "" {
+		return right
 	}
-	if base == "" {
-		return prefix
+	if right == "" {
+		return left
 	}
-	return prefix + "\n" + base
-}
-
-func sanitizePreInput(preInput string) string {
-	trimmed := strings.TrimSpace(preInput)
-	if trimmed == "" {
-		return ""
-	}
-	for {
-		start := strings.Index(trimmed, "{{")
-		if start < 0 {
-			break
-		}
-		end := strings.Index(trimmed[start+2:], "}}")
-		if end < 0 {
-			break
-		}
-		trimmed = trimmed[:start] + trimmed[start+2+end+2:]
-	}
-	return strings.TrimSpace(trimmed)
-}
-
-func buildSharedBaseQuery(shared map[string]any) string {
-	userText := stringify(shared["text"])
-	prevQuery := stringify(shared["query"])
-	inputText := stringify(shared["input"])
-
-	parts := make([]string, 0, 3)
-	if userText != "" {
-		parts = append(parts, userText)
-	}
-	if prevQuery != "" && prevQuery != userText {
-		parts = append(parts, prevQuery)
-	}
-	if inputText != "" && inputText != userText && inputText != prevQuery {
-		parts = append(parts, inputText)
-	}
-
-	return strings.TrimSpace(strings.Join(parts, "\n"))
+	return left + "\n" + right
 }
 
 func extractQueryFromOutput(output map[string]any) string {

@@ -1,10 +1,11 @@
-package chat
+﻿package chat
 
 import (
 	"ai/api/chat/api"
 	"ai/api/orchestrator"
 	"ai/config"
 	authsvc "ai/pkg/auth"
+	"ai/pkg/authz"
 	internalproto "ai/pkg/protocol"
 	"ai/pkg/storage"
 	"ai/pkg/transport/httpagent"
@@ -125,6 +126,9 @@ func NewOpenAIServer() (http.Handler, error) {
 
 	s := &Server{}
 
+	// Keep custom [TRACE] logs only; suppress Gin's default access log lines.
+	gin.DefaultWriter = io.Discard
+
 	engine := gin.New()
 	engine.Use(func(c *gin.Context) {
 		// Minimal CORS for the web UI (Vite dev server runs on a different origin).
@@ -209,7 +213,9 @@ func (s *Server) proxyHostRequest(c *gin.Context, routePrefix string) {
 		req.Header.Set("Authorization", auth)
 	}
 
-	httpClient := &http.Client{Timeout: 120 * time.Second}
+	// User workflow test runs may contain multiple LLM/tool nodes and can exceed 2 minutes.
+	// Keep proxy timeout long enough to avoid canceling in-flight orchestrator execution.
+	httpClient := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -237,45 +243,40 @@ func (s *Server) chatHandler(c *gin.Context) {
 		requestID = uuid.New().String()
 	}
 	c.Header("X-Request-ID", requestID)
-	start := time.Now()
-	logger.Infof("[TRACE] openai.chatHandler start rid=%s from=%s", requestID, c.ClientIP())
 
 	var req api.ChatRequest
 	err := c.ShouldBindJSON(&req)
 	if err != nil {
-		logger.Infof("[TRACE] openai.chatHandler rid=%s bind_failed err=%v", requestID, err)
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	logger.Infof("[TRACE] openai.chatHandler rid=%s model=%s msgs=%d", requestID, req.Model, len(req.Messages))
+	if len(req.Messages) == 0 {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "messages is required"})
+		return
+	}
 
 	authService, authErr := getAuthService()
 	if authErr != nil {
-		logger.Infof("[TRACE] openai.chatHandler rid=%s auth_init_failed err=%v", requestID, authErr)
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "auth service unavailable"})
 		return
 	}
 	token, tokenErr := bearerTokenFromHeader(c.GetHeader("Authorization"))
 	if tokenErr != nil {
-		logger.Infof("[TRACE] openai.chatHandler rid=%s missing_auth", requestID)
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return
 	}
 	authUser, userErr := authService.AuthenticateAccessToken(c.Request.Context(), token)
 	if userErr != nil {
-		logger.Infof("[TRACE] openai.chatHandler rid=%s invalid_auth err=%v", requestID, userErr)
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 	authUserID := authUser.UserID
 
-	agentConfig, err := resolveAgentConfig(req.Model, authUserID)
+	agentConfig, err := resolveAgentConfig(req.Model, authUserID, requestID)
 	if err != nil {
-		logger.Infof("[TRACE] openai.chatHandler rid=%s agent_not_found model=%s err=%v", requestID, req.Model, err)
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	logger.Infof("[TRACE] openai.chatHandler rid=%s target_agent=%s server=%s", requestID, agentConfig.Name, agentConfig.ServerURL)
 
 	ch := make(chan any)
 	go func() {
@@ -285,7 +286,6 @@ func (s *Server) chatHandler(c *gin.Context) {
 
 		factory, memErr := getMemoryFactory()
 		if memErr != nil {
-			logger.Infof("[TRACE] openai.chatHandler rid=%s memory_factory_failed err=%v", requestID, memErr)
 			ch <- gin.H{"error": fmt.Sprintf("memory service unavailable: %v", memErr)}
 			return
 		}
@@ -294,7 +294,6 @@ func (s *Server) chatHandler(c *gin.Context) {
 
 		mem, err := factory.Get(ctx, userID)
 		if err != nil {
-			logger.Infof("[TRACE] openai.chatHandler rid=%s memory_get_failed err=%v", requestID, err)
 			ch <- gin.H{"error": fmt.Sprintf("failed to get memory: %v", err)}
 			return
 		}
@@ -312,12 +311,10 @@ func (s *Server) chatHandler(c *gin.Context) {
 			if conv == nil {
 				conv, err = mem.NewConversation(ctx)
 				if err != nil {
-					logger.Infof("[TRACE] openai.chatHandler rid=%s conv_create_failed err=%v", requestID, err)
 					ch <- gin.H{"error": fmt.Sprintf("failed to create conversation: %v", err)}
 					return
 				}
 				if setErr := mem.SetState(ctx, mapKey, conv.GetID(ctx)); setErr != nil {
-					logger.Infof("[TRACE] openai.chatHandler rid=%s conv_map_set_failed err=%v", requestID, setErr)
 				}
 			}
 		} else {
@@ -326,7 +323,6 @@ func (s *Server) chatHandler(c *gin.Context) {
 			if len(req.Messages) <= 1 {
 				conv, err = mem.NewConversation(ctx)
 				if err != nil {
-					logger.Infof("[TRACE] openai.chatHandler rid=%s conv_create_failed err=%v", requestID, err)
 					ch <- gin.H{"error": fmt.Sprintf("failed to create conversation: %v", err)}
 					return
 				}
@@ -335,7 +331,6 @@ func (s *Server) chatHandler(c *gin.Context) {
 				if err != nil {
 					conv, err = mem.NewConversation(ctx)
 					if err != nil {
-						logger.Infof("[TRACE] openai.chatHandler rid=%s conv_create_failed err=%v", requestID, err)
 						ch <- gin.H{"error": fmt.Sprintf("failed to create conversation: %v", err)}
 						return
 					}
@@ -343,7 +338,6 @@ func (s *Server) chatHandler(c *gin.Context) {
 			}
 		}
 		convID := conv.GetID(ctx)
-		logger.Infof("[TRACE] openai.chatHandler rid=%s user=%s client_conv=%s conv=%s", requestID, userID, clientConvID, convID)
 
 		lastUserMsg := req.Messages[len(req.Messages)-1]
 		userMsgID := uuid.New().String()
@@ -352,14 +346,11 @@ func (s *Server) chatHandler(c *gin.Context) {
 			Content: lastUserMsg.Content,
 		}
 		if err := conv.Append(ctx, userMsgID, userMsg); err != nil {
-			logger.Infof("[TRACE] openai.chatHandler rid=%s save_user_msg_failed err=%v", requestID, err)
 		}
 
 		historyMsgs, err := conv.GetMessages(ctx)
 		if err != nil {
-			logger.Infof("[TRACE] openai.chatHandler rid=%s get_history_failed err=%v", requestID, err)
 		}
-		logger.Infof("[TRACE] openai.chatHandler rid=%s history_count=%d", requestID, len(historyMsgs))
 
 		var historyParts []internalproto.Part
 		if len(historyMsgs) > 0 {
@@ -383,7 +374,6 @@ func (s *Server) chatHandler(c *gin.Context) {
 
 		if taskID == "" {
 			taskID = uuid.New().String()
-			logger.Infof("[TRACE] openai.chatHandler rid=%s new_task=%s", requestID, taskID)
 			res := api.ChatResponse{
 				Model:     req.Model,
 				CreatedAt: time.Now().UTC(),
@@ -394,7 +384,6 @@ func (s *Server) chatHandler(c *gin.Context) {
 		}
 
 		if err := mem.SetState(ctx, taskStateKey, taskID, memory.StateKeyCurrentUserEventID, ""); err != nil {
-			logger.Infof("[TRACE] openai.chatHandler rid=%s set_state_failed err=%v", requestID, err)
 		}
 
 		var allParts []internalproto.Part
@@ -418,16 +407,12 @@ func (s *Server) chatHandler(c *gin.Context) {
 
 		client := httpagent.NewClient(agentConfig.ServerURL, time.Minute*10)
 		ctx = httpagent.WithRequestID(ctx, requestID)
-		logger.Infof("[TRACE] openai.chatHandler rid=%s -> SendMessage start task=%s user=%s", requestID, taskID, userID)
 
 		taskID, err = client.SendMessage(ctx, initMessage)
 		if err != nil {
-			logger.Infof("[TRACE] openai.chatHandler rid=%s SendMessage failed err=%v", requestID, err)
 			ch <- gin.H{"error": err.Error()}
 			return
 		}
-		logger.Infof("[TRACE] openai.chatHandler rid=%s <- SendMessage ok assigned_task=%s", requestID, taskID)
-		logger.Infof("[TRACE] openai.chatHandler rid=%s -> StreamTaskEvents start task=%s", requestID, taskID)
 		taskChan, errChan := client.StreamTaskEvents(ctx, taskID)
 
 		var assistantContent strings.Builder
@@ -437,7 +422,6 @@ func (s *Server) chatHandler(c *gin.Context) {
 				st := v.TaskStatusUpdate.Status.State
 				if st != lastState {
 					lastState = st
-					logger.Infof("[TRACE] openai.chatHandler rid=%s event task=%s state=%s", requestID, taskID, st)
 				}
 				handleTaskStatusUpdateEvent(ctx, req, ch, *v.TaskStatusUpdate)
 				if v.TaskStatusUpdate.Status.Message != nil {
@@ -450,11 +434,9 @@ func (s *Server) chatHandler(c *gin.Context) {
 			}
 		}
 		if streamErr := <-errChan; streamErr != nil {
-			logger.Infof("[TRACE] openai.chatHandler rid=%s StreamTaskEvents err=%v", requestID, streamErr)
 			ch <- gin.H{"error": streamErr.Error()}
 			return
 		}
-		logger.Infof("[TRACE] openai.chatHandler rid=%s StreamTaskEvents done task=%s total=%s", requestID, taskID, time.Since(start))
 
 		assistantMsgID := uuid.New().String()
 		assistantMsg := &memory.Message{
@@ -462,12 +444,10 @@ func (s *Server) chatHandler(c *gin.Context) {
 			Content: assistantContent.String(),
 		}
 		if err := conv.Append(ctx, assistantMsgID, assistantMsg); err != nil {
-			logger.Infof("[TRACE] openai.chatHandler rid=%s save_assistant_msg_failed err=%v", requestID, err)
 		}
 
 		if isFinalState(lastState) {
 			if err := mem.SetState(ctx, taskStateKey, ""); err != nil {
-				logger.Infof("[TRACE] openai.chatHandler rid=%s clear_task_failed err=%v", requestID, err)
 			}
 		}
 
@@ -482,36 +462,65 @@ func (s *Server) chatHandler(c *gin.Context) {
 	}()
 
 	streamResponse(c, ch)
-	logger.Infof("[TRACE] openai.chatHandler end rid=%s total=%s", requestID, time.Since(start))
 }
 
-func resolveAgentConfig(model string, userID string) (config.AgentConfig, error) {
+func resolveAgentConfig(model string, userID string, requestID string) (config.AgentConfig, error) {
 	if st, err := storage.GetMySQLStorage(); err == nil {
-		agents, listErr := st.ListUserAgents(context.Background(), userID)
-		if listErr == nil {
-			for _, a := range agents {
-				if a.Name != model && a.AgentID != model {
-					continue
-				}
-				if a.Status != storage.AgentStatusPublished {
-					return config.AgentConfig{}, fmt.Errorf("agent %s is not published", model)
-				}
-				if a.Port <= 0 {
-					return config.AgentConfig{}, fmt.Errorf("agent %s is not running", model)
-				}
+		allowAllRead := false
+		authzService := authz.NewService(st)
+		if allowed, checkErr := authzService.CanAccess(context.Background(), authz.CheckRequest{
+			UserID:        userID,
+			Resource:      "orchestrator.agent.read",
+			RequiredScope: authz.ScopeAll,
+		}); checkErr == nil && allowed {
+			allowAllRead = true
+		}
 
-				serverURL := fmt.Sprintf("http://127.0.0.1:%d", a.Port)
-				if err := validateAgentEndpoint(context.Background(), serverURL); err != nil {
-					logger.Warnf("[TRACE] openai.resolveAgentConfig stale user-agent model=%s agentId=%s port=%d err=%v", model, a.AgentID, a.Port, err)
-					_ = st.UpdateAgentStatus(context.Background(), a.AgentID, storage.AgentStatusStopped, 0, 0)
-					return config.AgentConfig{}, fmt.Errorf("agent %s is not running (stale publish state), please republish or restart", model)
-				}
-
-				return config.AgentConfig{
-					Name:      a.Name,
-					ServerURL: serverURL,
-				}, nil
+		visible := make([]storage.UserAgentDefinition, 0)
+		if allowAllRead {
+			if allAgents, listErr := st.ListUserAgents(context.Background(), ""); listErr == nil {
+				visible = allAgents
+			} else {
 			}
+		} else {
+			merged := make(map[string]storage.UserAgentDefinition)
+			if ownAgents, ownErr := st.ListUserAgents(context.Background(), userID); ownErr == nil {
+				for _, a := range ownAgents {
+					merged[a.AgentID] = a
+				}
+			}
+			if systemAgents, sysErr := st.ListUserAgents(context.Background(), "system"); sysErr == nil {
+				for _, a := range systemAgents {
+					merged[a.AgentID] = a
+				}
+			}
+			visible = make([]storage.UserAgentDefinition, 0, len(merged))
+			for _, a := range merged {
+				visible = append(visible, a)
+			}
+		}
+
+		for _, a := range visible {
+			if a.Name != model && a.AgentID != model {
+				continue
+			}
+			if a.Status != storage.AgentStatusPublished {
+				return config.AgentConfig{}, fmt.Errorf("agent %s is not published", model)
+			}
+			if a.Port <= 0 {
+				return config.AgentConfig{}, fmt.Errorf("agent %s is not running", model)
+			}
+
+			serverURL := fmt.Sprintf("http://127.0.0.1:%d", a.Port)
+			if err := validateAgentEndpoint(context.Background(), serverURL); err != nil {
+				_ = st.UpdateAgentStatus(context.Background(), a.AgentID, storage.AgentStatusStopped, 0, 0)
+				return config.AgentConfig{}, fmt.Errorf("agent %s is not running (stale publish state), please republish or restart", model)
+			}
+
+			return config.AgentConfig{
+				Name:      a.Name,
+				ServerURL: serverURL,
+			}, nil
 		}
 	}
 

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -90,6 +91,12 @@ func (e *InterpretiveExecutor) ExecuteWorkflow(ctx context.Context, wf *orchestr
 	if shared == nil {
 		shared = make(map[string]any)
 	}
+	seedInputQueryHistory(shared)
+	testDebugEnabled := boolValueFromAny(shared["_debug_test_exec"])
+	testDebugRequestID := stringValueFromAny(shared["_debug_test_request_id"])
+	if testDebugEnabled {
+		logger.Infof("[Executor][TestDebug] run_start runId=%s workflowId=%s startNode=%s sharedKeys=%v requestId=%s", runID, wf.ID, wf.StartNodeID, mapKeysAny(shared), testDebugRequestID)
+	}
 
 	result := &ExecutionResult{
 		RunID:       runID,
@@ -138,6 +145,11 @@ func (e *InterpretiveExecutor) ExecuteWorkflow(ctx context.Context, wf *orchestr
 			return result, nil
 		}
 
+		if testDebugEnabled {
+			logger.Infof("[Executor][TestDebug] node_start runId=%s requestId=%s step=%d nodeId=%s nodeType=%s sharedKeys=%v", runID, testDebugRequestID, iterations, node.ID, node.Type, mapKeysAny(shared))
+			logger.Infof("[Executor][TestDebug] node_input runId=%s requestId=%s step=%d nodeId=%s input=%s", runID, testDebugRequestID, iterations, node.ID, snapshotForLog(shared, 3000))
+		}
+
 		if e.monitorSvc != nil {
 			_ = e.monitorSvc.UpdateCurrentNode(ctx, runID, node.ID)
 			_ = e.monitorSvc.AppendEvent(ctx, monitor.AppendEventInput{
@@ -157,6 +169,10 @@ func (e *InterpretiveExecutor) ExecuteWorkflow(ctx context.Context, wf *orchestr
 
 		nodeResult, nextNodeID, err := handler(ctx, wf, node, shared)
 		if err != nil {
+			if testDebugEnabled {
+				logger.Warnf("[Executor][TestDebug] node_failed runId=%s requestId=%s step=%d nodeId=%s nodeType=%s durationMs=%d next=%s err=%v", runID, testDebugRequestID, iterations, node.ID, node.Type, nodeResult.Duration, nextNodeID, err)
+				logger.Warnf("[Executor][TestDebug] node_output runId=%s requestId=%s step=%d nodeId=%s output=%s", runID, testDebugRequestID, iterations, node.ID, snapshotForLog(nodeResult.Output, 3000))
+			}
 			result.State = ExecutionStateFailed
 			result.Error = err.Error()
 			result.NodeResults = append(result.NodeResults, nodeResult)
@@ -192,6 +208,11 @@ func (e *InterpretiveExecutor) ExecuteWorkflow(ctx context.Context, wf *orchestr
 			}
 			return result, nil
 		}
+		if testDebugEnabled {
+			logger.Infof("[Executor][TestDebug] node_done runId=%s requestId=%s step=%d nodeId=%s nodeType=%s state=%s durationMs=%d next=%s outputKeys=%v", runID, testDebugRequestID, iterations, node.ID, node.Type, nodeResult.State, nodeResult.Duration, nextNodeID, mapKeysAny(nodeResult.Output))
+			logger.Infof("[Executor][TestDebug] node_output runId=%s requestId=%s step=%d nodeId=%s output=%s", runID, testDebugRequestID, iterations, node.ID, snapshotForLog(nodeResult.Output, 3000))
+		}
+		updateSharedOutputState(shared, node.ID, nodeResult.Output)
 
 		result.NodeResults = append(result.NodeResults, nodeResult)
 		if e.monitorSvc != nil {
@@ -231,12 +252,18 @@ func (e *InterpretiveExecutor) ExecuteWorkflow(ctx context.Context, wf *orchestr
 	if iterations >= e.config.MaxIterations {
 		result.State = ExecutionStateFailed
 		result.Error = "max iterations exceeded"
+		if testDebugEnabled {
+			logger.Warnf("[Executor][TestDebug] run_failed runId=%s requestId=%s reason=max_iterations_exceeded maxIterations=%d", runID, testDebugRequestID, e.config.MaxIterations)
+		}
 		return result, nil
 	}
 
 	result.State = ExecutionStateSucceeded
 	result.Output = shared
 	logger.Infof("[Executor] ExecuteWorkflow done runId=%s state=%s", runID, result.State)
+	if testDebugEnabled {
+		logger.Infof("[Executor][TestDebug] run_done runId=%s requestId=%s state=%s nodeResults=%d", runID, testDebugRequestID, result.State, len(result.NodeResults))
+	}
 
 	return result, nil
 }
@@ -307,6 +334,57 @@ func stringValueFromAny(v any) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(v))
+}
+
+func boolValueFromAny(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		s := strings.ToLower(strings.TrimSpace(x))
+		return s == "1" || s == "true" || s == "yes" || s == "on"
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case float64:
+		return x != 0
+	default:
+		return false
+	}
+}
+
+func mapKeysAny(m map[string]any) []string {
+	if len(m) == 0 {
+		return []string{}
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func snapshotForLog(v any, maxLen int) string {
+	if v == nil {
+		return "null"
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		s := strings.TrimSpace(fmt.Sprintf("%v", v))
+		if s == "" {
+			return "<empty>"
+		}
+		if maxLen > 0 && len(s) > maxLen {
+			return s[:maxLen] + "...<truncated>"
+		}
+		return s
+	}
+	s := string(b)
+	if maxLen > 0 && len(s) > maxLen {
+		return s[:maxLen] + "...<truncated>"
+	}
+	return s
 }
 
 func (e *InterpretiveExecutor) ExecuteWorkflowFromDefinition(ctx context.Context, def *WorkflowDefinition, input map[string]any) (*ExecutionResult, error) {
@@ -380,6 +458,8 @@ type NodeDef struct {
 	Config     map[string]any    `json:"config,omitempty"`
 	AgentID    string            `json:"agentId,omitempty"`
 	TaskType   string            `json:"taskType,omitempty"`
+	InputType  string            `json:"inputType,omitempty"`
+	OutputType string            `json:"outputType,omitempty"`
 	Condition  string            `json:"condition,omitempty"`
 	PreInput   string            `json:"preInput,omitempty"`
 	LoopConfig map[string]any    `json:"loopConfig,omitempty"`
@@ -421,9 +501,9 @@ func DefinitionToWorkflow(def *WorkflowDefinition) (*orchestrator.Workflow, erro
 
 		if nodeDef.LoopConfig != nil {
 			node.LoopConfig = &orchestrator.LoopConfig{
-				MaxIterations: getIntFromMap(nodeDef.LoopConfig, "max_iterations", 10),
-				ContinueTo:    getStringFromMap(nodeDef.LoopConfig, "continue_to"),
-				ExitTo:        getStringFromMap(nodeDef.LoopConfig, "exit_to"),
+				MaxIterations: getIntFromMapMulti(nodeDef.LoopConfig, []string{"max_iterations", "maxIterations"}, 10),
+				ContinueTo:    getStringFromMapMulti(nodeDef.LoopConfig, []string{"continue_to", "continueTo"}),
+				ExitTo:        getStringFromMapMulti(nodeDef.LoopConfig, []string{"exit_to", "exitTo"}),
 			}
 		}
 
@@ -463,6 +543,70 @@ func cloneMap(m map[string]any) map[string]any {
 	return result
 }
 
+func seedInputQueryHistory(shared map[string]any) {
+	if shared == nil {
+		return
+	}
+
+	q := firstNonEmptyString(
+		stringify(shared["query"]),
+		stringify(shared["text"]),
+		stringify(shared["input"]),
+	)
+	if q == "" {
+		return
+	}
+
+	history, _ := shared["history_outputs"].([]any)
+	if len(history) > 0 {
+		if first, ok := history[0].(map[string]any); ok {
+			if nodeID, _ := first["node_id"].(string); nodeID == "__input__" {
+				return
+			}
+		}
+	}
+
+	entry := map[string]any{
+		"node_id": "__input__",
+		"output":  map[string]any{"query": q},
+	}
+	history = append([]any{entry}, history...)
+	shared["history_outputs"] = history
+}
+
+func updateSharedOutputState(shared map[string]any, nodeID string, output map[string]any) {
+	if shared == nil || nodeID == "" || output == nil {
+		return
+	}
+
+	shared["latest_output"] = cloneAny(output)
+	history, _ := shared["history_outputs"].([]any)
+	history = append(history, map[string]any{
+		"node_id": nodeID,
+		"output":  cloneAny(output),
+	})
+	shared["history_outputs"] = history
+}
+
+func cloneAny(v any) any {
+	switch vv := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(vv))
+		for k, item := range vv {
+			m[k] = cloneAny(item)
+		}
+		return m
+	case []any:
+		arr := make([]any, len(vv))
+		for i := range vv {
+			arr[i] = cloneAny(vv[i])
+		}
+		return arr
+	default:
+		return vv
+	}
+}
+
 func getIntFromMap(m map[string]any, key string, defaultValue int) int {
 	if v, ok := m[key]; ok {
 		switch n := v.(type) {
@@ -481,6 +625,29 @@ func getStringFromMap(m map[string]any, key string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
+		}
+	}
+	return ""
+}
+
+func getIntFromMapMulti(m map[string]any, keys []string, defaultValue int) int {
+	for _, key := range keys {
+		if v := getIntFromMap(m, key, defaultValue); v != defaultValue {
+			return v
+		}
+	}
+	for _, key := range keys {
+		if _, ok := m[key]; ok {
+			return getIntFromMap(m, key, defaultValue)
+		}
+	}
+	return defaultValue
+}
+
+func getStringFromMapMulti(m map[string]any, keys []string) string {
+	for _, key := range keys {
+		if v := getStringFromMap(m, key); v != "" {
+			return v
 		}
 	}
 	return ""

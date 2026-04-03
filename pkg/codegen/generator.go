@@ -1,4 +1,4 @@
-package codegen
+﻿package codegen
 
 import (
 	"fmt"
@@ -210,17 +210,16 @@ func (g *CodeGenerator) generateAgentCode(req *AgentGenerateRequest) string {
 	buf.WriteString("import (\n")
 	buf.WriteString("\t\"ai/config\"\n")
 	buf.WriteString("\t\"ai/pkg/llm\"\n")
-	buf.WriteString("\t\"ai/pkg/logger\"\n")
+	buf.WriteString("\t\"ai/pkg/monitor\"\n")
 	buf.WriteString("\t\"ai/pkg/orchestrator\"\n")
 	buf.WriteString("\tinternalproto \"ai/pkg/protocol\"\n")
+	buf.WriteString("\t\"ai/pkg/storage\"\n")
 	buf.WriteString("\tinternaltm \"ai/pkg/taskmanager\"\n")
 	buf.WriteString("\t\"ai/pkg/tools\"\n")
 	buf.WriteString("\t\"context\"\n")
 	buf.WriteString("\t\"fmt\"\n")
 	buf.WriteString("\t\"strings\"\n")
-	if len(req.Tools) > 0 {
-		buf.WriteString("\t\"time\"\n")
-	}
+	buf.WriteString("\t\"time\"\n")
 	buf.WriteString(")\n\n")
 
 	buf.WriteString(g.generateConstants(req))
@@ -236,13 +235,29 @@ func (g *CodeGenerator) generateAgentCode(req *AgentGenerateRequest) string {
 func (g *CodeGenerator) generateConstants(req *AgentGenerateRequest) string {
 	var buf strings.Builder
 	agentIdent := toGoIdent(req.AgentID)
+	workflowID := strings.TrimSpace(req.AgentID)
+	if req.WorkflowDef != nil {
+		if wid := strings.TrimSpace(req.WorkflowDef.WorkflowID); wid != "" {
+			workflowID = wid
+		}
+	}
 	buf.WriteString(fmt.Sprintf("const (\n"))
-	buf.WriteString(fmt.Sprintf("\t%sWorkflowID = \"%s-default\"\n", agentIdent, req.AgentID))
+	buf.WriteString(fmt.Sprintf("\t%sWorkflowID = %q\n", agentIdent, workflowID))
 	buf.WriteString(fmt.Sprintf("\t%sWorkflowWorkerID = \"%s_worker\"\n", agentIdent, req.AgentID))
 	buf.WriteString(fmt.Sprintf("\t%sDefaultTaskType = \"%s_default\"\n", agentIdent, req.AgentID))
 	buf.WriteString(")\n\n")
 
 	buf.WriteString("type ctxKeyTaskManager struct{}\n\n")
+
+	buf.WriteString(fmt.Sprintf("var %sNodeTypeByID = map[string]string{\n", agentIdent))
+	for _, n := range req.WorkflowDef.Nodes {
+		typeLabel := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(n.Type)), "_", "")
+		if typeLabel == "" {
+			typeLabel = "node"
+		}
+		buf.WriteString(fmt.Sprintf("\t%q: %q,\n", n.ID, typeLabel))
+	}
+	buf.WriteString("}\n\n")
 
 	return buf.String()
 }
@@ -287,7 +302,6 @@ func (g *CodeGenerator) generateNewAgent(req *AgentGenerateRequest) string {
 	buf.WriteString("\tif agent.chatModel == \"\" {\n")
 	buf.WriteString("\t\tagent.chatModel = \"qwen3-235b-a22b\"\n")
 	buf.WriteString("\t}\n")
-	buf.WriteString(fmt.Sprintf("\tlogger.Infof(\"[TRACE] %s llm_config url=%%s model=%%s api_key_set=%%t\", strings.TrimSpace(cfg.LLM.URL), agent.chatModel, strings.TrimSpace(cfg.LLM.APIKey) != \"\")\n\n", req.AgentID))
 
 	for _, tool := range req.Tools {
 		buf.WriteString(g.generateToolInit(tool))
@@ -311,6 +325,14 @@ func (g *CodeGenerator) generateNewAgent(req *AgentGenerateRequest) string {
 	buf.WriteString("\t}\n")
 	buf.WriteString("\tif engineCfg.RetryMaxBackoffMs <= 0 {\n")
 	buf.WriteString("\t\tengineCfg.RetryMaxBackoffMs = 5000\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("\tmysqlStorage, mysqlErr := storage.GetMySQLStorage()\n")
+	buf.WriteString("\tif (mysqlErr != nil || mysqlStorage == nil) && strings.TrimSpace(cfg.MySQL.DSN) != \"\" {\n")
+	buf.WriteString("\t\tmysqlStorage, mysqlErr = storage.InitMySQL(strings.TrimSpace(cfg.MySQL.DSN))\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("\tif mysqlErr == nil && mysqlStorage != nil {\n")
+	buf.WriteString("\t\tengineCfg.MonitorService = monitor.NewService(mysqlStorage, nil)\n")
+	buf.WriteString("\t} else {\n")
 	buf.WriteString("\t}\n\n")
 
 	buf.WriteString("\tagent.orchestratorEngine = orchestrator.NewEngine(engineCfg, orchestrator.NewInMemoryAgentRegistry())\n")
@@ -422,23 +444,37 @@ func (g *CodeGenerator) generateProcessInternal(req *AgentGenerateRequest) strin
 
 	buf.WriteString("\tctx = withTaskManager(ctx, manager)\n")
 	buf.WriteString("\tquery := strings.TrimSpace(strings.Join(queryParts, \"\\n\"))\n\n")
-	buf.WriteString(fmt.Sprintf("\tlogger.Infof(\"[TRACE] %s.ProcessInternal start task=%%s query_len=%%d\", taskID, len(query))\n", req.AgentID))
+	buf.WriteString("\tuserID := \"\"\n")
+	buf.WriteString("\tif initialMsg.Metadata != nil {\n")
+	buf.WriteString("\t\tuserID = strings.TrimSpace(fmt.Sprint(initialMsg.Metadata[\"user_id\"]))\n")
+	buf.WriteString("\t\tif userID == \"\" || userID == \"<nil>\" {\n")
+	buf.WriteString("\t\t\tuserID = strings.TrimSpace(fmt.Sprint(initialMsg.Metadata[\"userId\"]))\n")
+	buf.WriteString("\t\t}\n")
+	buf.WriteString("\t\tif userID == \"\" || userID == \"<nil>\" {\n")
+	buf.WriteString("\t\t\tuserID = strings.TrimSpace(fmt.Sprint(initialMsg.Metadata[\"UserID\"]))\n")
+	buf.WriteString("\t\t}\n")
+	buf.WriteString("\t\tif userID == \"<nil>\" {\n")
+	buf.WriteString("\t\t\tuserID = \"\"\n")
+	buf.WriteString("\t\t}\n")
+	buf.WriteString("\t}\n\n")
 
 	buf.WriteString(fmt.Sprintf("\trunID, err := a.orchestratorEngine.StartWorkflow(ctx, %sWorkflowID, map[string]any{\n", agentIdent))
 	buf.WriteString("\t\t\"task_id\": taskID,\n")
 	buf.WriteString("\t\t\"query\":   query,\n")
+	buf.WriteString("\t\t\"text\":    query,\n")
+	buf.WriteString("\t\t\"input\":   query,\n")
+	buf.WriteString("\t\t\"user_id\": userID,\n")
+	buf.WriteString(fmt.Sprintf("\t\t\"source_agent_id\": %q,\n", req.AgentID))
+	buf.WriteString(fmt.Sprintf("\t\t\"agent_id\": %q,\n", req.AgentID))
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
 	buf.WriteString(fmt.Sprintf("\t\treturn fmt.Errorf(\"failed to start %s workflow: %%w\", err)\n", req.AgentID))
 	buf.WriteString("\t}\n")
-	buf.WriteString(fmt.Sprintf("\tlogger.Infof(\"[TRACE] %s.ProcessInternal started task=%%s run_id=%%s\", taskID, runID)\n", req.AgentID))
+	buf.WriteString("\tstopProgress := a.startProgressReporter(ctx, taskID, runID, manager)\n")
+	buf.WriteString("\tdefer stopProgress()\n")
 	buf.WriteString("\trunResult, err := a.orchestratorEngine.WaitRun(ctx, runID)\n")
 	buf.WriteString("\tif err != nil {\n")
 	buf.WriteString(fmt.Sprintf("\t\treturn fmt.Errorf(\"failed to wait %s workflow: %%w\", err)\n", req.AgentID))
-	buf.WriteString("\t}\n")
-	buf.WriteString(fmt.Sprintf("\tlogger.Infof(\"[TRACE] %s.ProcessInternal done task=%%s run_state=%%s err=%%s\", taskID, runResult.State, runResult.ErrorMessage)\n", req.AgentID))
-	buf.WriteString("\tfor _, nr := range runResult.NodeResults {\n")
-	buf.WriteString(fmt.Sprintf("\t\tlogger.Infof(\"[TRACE] %s.ProcessInternal node_result task=%%s node=%%s state=%%s node_task=%%s err=%%s\", taskID, nr.NodeID, nr.State, nr.TaskID, nr.ErrorMsg)\n", req.AgentID))
 	buf.WriteString("\t}\n")
 	buf.WriteString("\tif runResult.State != orchestrator.RunStateSucceeded {\n")
 	buf.WriteString("\t\tif runResult.ErrorMessage != \"\" {\n")
@@ -465,6 +501,7 @@ func (g *CodeGenerator) generateProcessInternal(req *AgentGenerateRequest) strin
 
 func (g *CodeGenerator) generateWorker(req *AgentGenerateRequest) string {
 	var buf strings.Builder
+	agentIdent := toGoIdent(req.AgentID)
 
 	buf.WriteString("func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.ExecutionRequest) (orchestrator.ExecutionResult, error) {\n")
 	buf.WriteString("\ttaskID, _ := req.Payload[\"task_id\"].(string)\n")
@@ -509,7 +546,6 @@ func (g *CodeGenerator) generateWorker(req *AgentGenerateRequest) string {
 	buf.WriteString("\t\t\tmodel = strings.TrimSpace(v)\n")
 	buf.WriteString("\t\t}\n")
 	buf.WriteString("\t}\n")
-	buf.WriteString(fmt.Sprintf("\tlogger.Infof(\"[TRACE] %s.chatmodel start task=%%s model=%%s url=%%s api_key_set=%%t query_len=%%d\", taskID, model, baseURL, apiKey != \"\", len(query))\n", req.AgentID))
 	buf.WriteString("\tif baseURL == \"\" || model == \"\" {\n")
 	buf.WriteString("\t\treturn \"\", fmt.Errorf(\"chat_model config missing url/model\")\n")
 	buf.WriteString("\t}\n")
@@ -521,7 +557,6 @@ func (g *CodeGenerator) generateWorker(req *AgentGenerateRequest) string {
 	buf.WriteString("\tif resp == \"\" {\n")
 	buf.WriteString("\t\tresp = \"(empty LLM response)\"\n")
 	buf.WriteString("\t}\n")
-	buf.WriteString(fmt.Sprintf("\tlogger.Infof(\"[TRACE] %s.chatmodel done task=%%s resp_len=%%d\", taskID, len(resp))\n", req.AgentID))
 	buf.WriteString("\treturn resp, nil\n")
 	buf.WriteString("}\n\n")
 
@@ -568,11 +603,11 @@ func (g *CodeGenerator) generateWorker(req *AgentGenerateRequest) string {
 	buf.WriteString("\tif strings.EqualFold(toolName, \"tavily\") {\n")
 	buf.WriteString("\t\tq, _ := params[\"query\"].(string)\n")
 	buf.WriteString("\t\trawQ := q\n")
-	buf.WriteString("\t\tif i := strings.LastIndex(q, \"=== 当前问题 ===\"); i >= 0 {\n")
-	buf.WriteString("\t\t\tq = strings.TrimSpace(q[i+len(\"=== 当前问题 ===\"):])\n")
+	buf.WriteString("\t\tif i := strings.LastIndex(q, \"=== 褰撳墠闂 ===\"); i >= 0 {\n")
+	buf.WriteString("\t\t\tq = strings.TrimSpace(q[i+len(\"=== 褰撳墠闂 ===\"):])\n")
 	buf.WriteString("\t\t}\n")
-	buf.WriteString("\t\tif i := strings.LastIndex(q, \"用户:\"); i >= 0 {\n")
-	buf.WriteString("\t\t\tq = strings.TrimSpace(q[i+len(\"用户:\"):])\n")
+	buf.WriteString("\t\tif i := strings.LastIndex(q, \"鐢ㄦ埛:\"); i >= 0 {\n")
+	buf.WriteString("\t\t\tq = strings.TrimSpace(q[i+len(\"鐢ㄦ埛:\"):])\n")
 	buf.WriteString("\t\t}\n")
 	buf.WriteString("\t\tif q == \"\" {\n")
 	buf.WriteString("\t\t\tq = strings.TrimSpace(rawQ)\n")
@@ -581,7 +616,6 @@ func (g *CodeGenerator) generateWorker(req *AgentGenerateRequest) string {
 	buf.WriteString("\t\t\tq = q[:400]\n")
 	buf.WriteString("\t\t}\n")
 	buf.WriteString("\t\tparams[\"query\"] = q\n")
-	buf.WriteString(fmt.Sprintf("\t\tlogger.Infof(\"[TRACE] %s.tavily request task=%%s query_len=%%d query=%%q\", taskID, len(q), q)\n", req.AgentID))
 	buf.WriteString("\t}\n")
 	buf.WriteString("\ttool, err := a.findToolByName(toolName)\n")
 	buf.WriteString("\tif err != nil {\n")
@@ -633,12 +667,102 @@ func (g *CodeGenerator) generateWorker(req *AgentGenerateRequest) string {
 	buf.WriteString("\treturn m\n")
 	buf.WriteString("}\n\n")
 
+	buf.WriteString("func (a *Agent) buildNodeProgressMessage(nodeID string, stepState internalproto.StepState) string {\n")
+	buf.WriteString("\tnodeID = strings.TrimSpace(nodeID)\n")
+	buf.WriteString("\tnodeType := \"node\"\n")
+	buf.WriteString(fmt.Sprintf("\tif v := strings.TrimSpace(%sNodeTypeByID[nodeID]); v != \"\" {\n", agentIdent))
+	buf.WriteString("\t\tnodeType = v\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("\t_ = stepState\n")
+	buf.WriteString("\treturn fmt.Sprintf(\"鑺傜偣鍚?%s 鑺傜偣绫诲瀷:%s\", nodeID, nodeType)\n")
+	buf.WriteString("}\n\n")
+
+	buf.WriteString("func (a *Agent) startProgressReporter(ctx context.Context, taskID string, runID string, manager internaltm.Manager) func() {\n")
+	buf.WriteString("\tif manager == nil || a.orchestratorEngine == nil {\n")
+	buf.WriteString("\t\treturn func() {}\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("\tstopCh := make(chan struct{})\n")
+	buf.WriteString("\tdoneCh := make(chan struct{})\n")
+	buf.WriteString("\tgo func() {\n")
+	buf.WriteString("\t\tdefer close(doneCh)\n")
+	buf.WriteString("\t\tticker := time.NewTicker(200 * time.Millisecond)\n")
+	buf.WriteString("\t\tdefer ticker.Stop()\n")
+	buf.WriteString("\t\tstarted := map[string]bool{}\n")
+	buf.WriteString("\t\tfinished := map[string]bool{}\n")
+	buf.WriteString("\t\tfor {\n")
+	buf.WriteString("\t\t\trun, err := a.orchestratorEngine.GetRun(ctx, runID)\n")
+	buf.WriteString("\t\t\tif err == nil {\n")
+	buf.WriteString("\t\t\t\tnodeID := strings.TrimSpace(run.CurrentNodeID)\n")
+	buf.WriteString("\t\t\t\tif nodeID != \"\" && !started[nodeID] {\n")
+	buf.WriteString("\t\t\t\t\tstarted[nodeID] = true\n")
+	buf.WriteString("\t\t\t\t\tmessageZh := a.buildNodeProgressMessage(nodeID, internalproto.StepStateStart)\n")
+	buf.WriteString(fmt.Sprintf("\t\t\t\t\tev := internalproto.NewStepEvent(%q, \"workflow\", nodeID, internalproto.StepStateStart, messageZh)\n", req.AgentID))
+	buf.WriteString("\t\t\t\t\ttext := messageZh\n")
+	buf.WriteString("\t\t\t\t\tif token, tokenErr := internalproto.EncodeStepToken(ev); tokenErr == nil {\n")
+	buf.WriteString("\t\t\t\t\t\ttext = messageZh + \"\\n\" + token\n")
+	buf.WriteString("\t\t\t\t\t}\n")
+	buf.WriteString("\t\t\t\t\t_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{\n")
+	buf.WriteString("\t\t\t\t\t\tRole:  internalproto.MessageRoleAgent,\n")
+	buf.WriteString("\t\t\t\t\t\tParts: []internalproto.Part{internalproto.NewTextPart(text)},\n")
+	buf.WriteString("\t\t\t\t\t})\n")
+	buf.WriteString("\t\t\t\t}\n")
+	buf.WriteString("\t\t\t\tfor _, nr := range run.NodeResults {\n")
+	buf.WriteString("\t\t\t\t\tid := strings.TrimSpace(nr.NodeID)\n")
+	buf.WriteString("\t\t\t\t\tif id == \"\" || finished[id] {\n")
+	buf.WriteString("\t\t\t\t\t\tcontinue\n")
+	buf.WriteString("\t\t\t\t\t}\n")
+	buf.WriteString("\t\t\t\t\tstepState, ok := generatedToTerminalStepState(nr.State)\n")
+	buf.WriteString("\t\t\t\t\tif !ok {\n")
+	buf.WriteString("\t\t\t\t\t\tcontinue\n")
+	buf.WriteString("\t\t\t\t\t}\n")
+	buf.WriteString("\t\t\t\t\tfinished[id] = true\n")
+	buf.WriteString("\t\t\t\t\tmessageZh := a.buildNodeProgressMessage(id, stepState)\n")
+	buf.WriteString(fmt.Sprintf("\t\t\t\t\tev := internalproto.NewStepEvent(%q, \"workflow\", id, stepState, messageZh)\n", req.AgentID))
+	buf.WriteString("\t\t\t\t\tif token, tokenErr := internalproto.EncodeStepToken(ev); tokenErr == nil {\n")
+	buf.WriteString("\t\t\t\t\t\ttext := messageZh + \"\\n\" + token\n")
+	buf.WriteString("\t\t\t\t\t\t_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{\n")
+	buf.WriteString("\t\t\t\t\t\t\tRole:  internalproto.MessageRoleAgent,\n")
+	buf.WriteString("\t\t\t\t\t\t\tParts: []internalproto.Part{internalproto.NewTextPart(text)},\n")
+	buf.WriteString("\t\t\t\t\t\t})\n")
+	buf.WriteString("\t\t\t\t\t}\n")
+	buf.WriteString("\t\t\t\t}\n")
+	buf.WriteString("\t\t\t\tif run.State != orchestrator.RunStateRunning {\n")
+	buf.WriteString("\t\t\t\t\treturn\n")
+	buf.WriteString("\t\t\t\t}\n")
+	buf.WriteString("\t\t\t}\n")
+	buf.WriteString("\t\t\tselect {\n")
+	buf.WriteString("\t\t\tcase <-ctx.Done():\n")
+	buf.WriteString("\t\t\t\treturn\n")
+	buf.WriteString("\t\t\tcase <-stopCh:\n")
+	buf.WriteString("\t\t\t\treturn\n")
+	buf.WriteString("\t\t\tcase <-ticker.C:\n")
+	buf.WriteString("\t\t\t}\n")
+	buf.WriteString("\t\t}\n")
+	buf.WriteString("\t}()\n")
+	buf.WriteString("\treturn func() {\n")
+	buf.WriteString("\t\tclose(stopCh)\n")
+	buf.WriteString("\t\t<-doneCh\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("}\n\n")
+
+	buf.WriteString("func generatedToTerminalStepState(state orchestrator.TaskState) (internalproto.StepState, bool) {\n")
+	buf.WriteString("\tswitch state {\n")
+	buf.WriteString("\tcase orchestrator.TaskStateSucceeded:\n")
+	buf.WriteString("\t\treturn internalproto.StepStateEnd, true\n")
+	buf.WriteString("\tcase orchestrator.TaskStateFailed, orchestrator.TaskStateCanceled:\n")
+	buf.WriteString("\t\treturn internalproto.StepStateError, true\n")
+	buf.WriteString("\tdefault:\n")
+	buf.WriteString("\t\treturn \"\", false\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("}\n\n")
+
 	return buf.String()
 }
 
 func (g *CodeGenerator) generateWorkflowBuilder(req *AgentGenerateRequest) string {
 	var buf strings.Builder
 	agentIdent := toGoIdent(req.AgentID)
+	routeHints := collectConditionRouteHints(req.WorkflowDef)
 
 	buf.WriteString(fmt.Sprintf("func build%sWorkflow() (*orchestrator.Workflow, error) {\n", agentIdent))
 	buf.WriteString(fmt.Sprintf("\twf, err := orchestrator.NewWorkflow(%sWorkflowID, \"%s default workflow\")\n", agentIdent, req.Name))
@@ -647,13 +771,13 @@ func (g *CodeGenerator) generateWorkflowBuilder(req *AgentGenerateRequest) strin
 	buf.WriteString("\t}\n\n")
 
 	for _, node := range req.WorkflowDef.Nodes {
-		buf.WriteString(g.generateNodeCode(node, req.AgentID))
+		buf.WriteString(g.generateNodeCode(node, req.AgentID, routeHints[node.ID]))
 	}
 
 	for _, edge := range req.WorkflowDef.Edges {
 		mappingExpr := "nil"
 		if len(edge.Mapping) > 0 {
-			mappingExpr = anyToGoLiteral(edge.Mapping)
+			mappingExpr = edgeMappingToGoLiteral(edge.Mapping)
 		}
 		buf.WriteString(fmt.Sprintf("\tif err = wf.AddEdgeWithLabel(\"%s\", \"%s\", \"%s\", %s); err != nil {\n", edge.From, edge.To, edge.Label, mappingExpr))
 		buf.WriteString("\t\treturn nil, err\n")
@@ -666,7 +790,7 @@ func (g *CodeGenerator) generateWorkflowBuilder(req *AgentGenerateRequest) strin
 	return buf.String()
 }
 
-func (g *CodeGenerator) generateNodeCode(node executor.NodeDef, agentID string) string {
+func (g *CodeGenerator) generateNodeCode(node executor.NodeDef, agentID string, routeHint map[string]string) string {
 	var buf strings.Builder
 	agentIdent := toGoIdent(agentID)
 
@@ -695,6 +819,26 @@ func (g *CodeGenerator) generateNodeCode(node executor.NodeDef, agentID string) 
 		buf.WriteString(fmt.Sprintf(", Config: %s", anyToGoLiteral(node.Config)))
 	}
 
+	metadata := map[string]string{}
+	for k, v := range node.Metadata {
+		metadata[k] = v
+	}
+	if node.Type == "condition" {
+		if _, ok := metadata["true_to"]; !ok {
+			if to := strings.TrimSpace(routeHint["true_to"]); to != "" {
+				metadata["true_to"] = to
+			}
+		}
+		if _, ok := metadata["false_to"]; !ok {
+			if to := strings.TrimSpace(routeHint["false_to"]); to != "" {
+				metadata["false_to"] = to
+			}
+		}
+	}
+	if len(metadata) > 0 {
+		buf.WriteString(fmt.Sprintf(", Metadata: %s", mapStringStringToGoLiteral(metadata)))
+	}
+
 	if node.Type == "loop" && node.LoopConfig != nil {
 		maxIter := getIntFromMap(node.LoopConfig, "max_iterations", 10)
 		continueTo := getStringFromMap(node.LoopConfig, "continue_to", "")
@@ -707,6 +851,36 @@ func (g *CodeGenerator) generateNodeCode(node executor.NodeDef, agentID string) 
 	buf.WriteString("\t}\n")
 
 	return buf.String()
+}
+
+func collectConditionRouteHints(def *executor.WorkflowDefinition) map[string]map[string]string {
+	out := map[string]map[string]string{}
+	if def == nil {
+		return out
+	}
+	cond := map[string]bool{}
+	for _, n := range def.Nodes {
+		if strings.EqualFold(strings.TrimSpace(n.Type), "condition") {
+			cond[n.ID] = true
+		}
+	}
+	for _, e := range def.Edges {
+		if !cond[e.From] {
+			continue
+		}
+		label := strings.ToLower(strings.TrimSpace(e.Label))
+		if label != "true" && label != "false" {
+			continue
+		}
+		if out[e.From] == nil {
+			out[e.From] = map[string]string{}
+		}
+		key := label + "_to"
+		if strings.TrimSpace(out[e.From][key]) == "" {
+			out[e.From][key] = e.To
+		}
+	}
+	return out
 }
 
 func anyToGoLiteral(v any) string {
@@ -797,6 +971,17 @@ func mapStringStringToGoLiteral(m map[string]string) string {
 		parts = append(parts, fmt.Sprintf("%q: %q", k, m[k]))
 	}
 	return "map[string]string{" + strings.Join(parts, ", ") + "}"
+}
+
+func edgeMappingToGoLiteral(m map[string]any) string {
+	if len(m) == 0 {
+		return "nil"
+	}
+	mm := make(map[string]string, len(m))
+	for k, v := range m {
+		mm[k] = fmt.Sprint(v)
+	}
+	return mapStringStringToGoLiteral(mm)
 }
 
 func (g *CodeGenerator) generateServerCode(req *AgentGenerateRequest) string {
@@ -1033,7 +1218,13 @@ func toGoIdent(s string) string {
 }
 
 func toCamelCase(s string) string {
-	parts := strings.Split(s, "_")
+	s = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '_'
+	}, s)
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '_' })
 	for i := range parts {
 		if len(parts[i]) > 0 {
 			parts[i] = strings.ToUpper(string(parts[i][0])) + parts[i][1:]

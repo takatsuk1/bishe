@@ -541,8 +541,10 @@ function eventSummary(event: MonitorEvent): string {
       return `完成：${nodeText}`
     case 'node_failed':
       return `完成：${nodeText} 失败`
+    case 'model_called':
+      return `开始：${nodeText} 调用模型`
     case 'agent_called':
-      return `开始：${nodeText} 调用子 agent`
+      return `开始：${nodeText} 调用子 Agent`
     case 'tool_called':
       return `开始：${nodeText} 调用工具`
     case 'alert_triggered':
@@ -561,7 +563,7 @@ function eventDisplayStatus(event: MonitorEvent): string {
     return terminal || event.status || 'running'
   }
 
-  if (event.eventType === 'node_started' || event.eventType === 'tool_called' || event.eventType === 'agent_called') {
+  if (event.eventType === 'node_started' || event.eventType === 'tool_called' || event.eventType === 'agent_called' || event.eventType === 'model_called') {
     const terminal = terminalNodeStatusByRunNode.value[`${runId}|${nodeId}`]
     return terminal || event.status || 'running'
   }

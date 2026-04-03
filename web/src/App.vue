@@ -57,7 +57,7 @@ function toggleNav(): void {
     <main class="app-main">
       <RouterView v-slot="{ Component, route }">
         <Transition name="tab-fade" mode="out-in">
-          <component :is="Component" :key="route.fullPath" />
+          <component v-if="Component" :is="Component" :key="route.fullPath" />
         </Transition>
       </RouterView>
     </main>

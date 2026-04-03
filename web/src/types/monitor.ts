@@ -5,6 +5,7 @@ export type MonitorEventType =
   | 'node_started'
   | 'node_finished'
   | 'node_failed'
+  | 'model_called'
   | 'agent_called'
   | 'tool_called'
   | 'retry_triggered'

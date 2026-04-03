@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -229,6 +230,7 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.ExecutionRequest) (orchestrator.ExecutionResult, error) {
 	taskID, _ := req.Payload["task_id"].(string)
 	query, _ := req.Payload["query"].(string)
+	logger.Infof("[TRACE] host.node_input task=%s node=%s type=%s query_len=%d payload=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, len(strings.TrimSpace(query)), snapshotAnyForLog(req.Payload, 2000))
 
 	var (
 		output map[string]any
@@ -248,8 +250,10 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 		output = map[string]any{"response": response}
 	}
 	if err != nil {
+		logger.Infof("[TRACE] host.node_error task=%s node=%s type=%s err=%v", taskID, strings.TrimSpace(req.NodeID), req.NodeType, err)
 		return orchestrator.ExecutionResult{}, err
 	}
+	logger.Infof("[TRACE] host.node_output task=%s node=%s type=%s output=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, snapshotAnyForLog(output, 2000))
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
@@ -258,6 +262,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	if query == "" {
 		return nil, fmt.Errorf("query is empty")
 	}
+	cleanQuery := extractHostUserQuery(payload, query)
 
 	intent := ""
 	baseURL := strings.TrimSpace(a.llmClient.BaseURL)
@@ -282,9 +287,9 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	agentInfo := extractAgentInfoPayload(payload)
 	switch intent {
 	case "route_agent":
-		finalPrompt = buildRoutePrompt(query, agentInfo)
+		finalPrompt = buildRoutePrompt(cleanQuery, agentInfo)
 	case "direct_answer":
-		finalPrompt = buildDirectAnswerPrompt(query, agentInfo)
+		finalPrompt = buildDirectAnswerPrompt(cleanQuery, agentInfo)
 	}
 
 	logger.Infof("[TRACE] host.chatmodel start task=%s intent=%s model=%s url=%s api_key_set=%t query_len=%d", taskID, intent, model, baseURL, apiKey != "", len(finalPrompt))
@@ -341,7 +346,13 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 			return nil, fmt.Errorf("no available agents from agent_info")
 		}
 
-		agentName := resolveAllowedAgentName(query, allowedAgents)
+		routeDecision := strings.TrimSpace(query)
+		if routeOut, ok := payload["N_route"].(map[string]any); ok {
+			if s := strings.TrimSpace(fmt.Sprint(routeOut["response"])); s != "" {
+				routeDecision = s
+			}
+		}
+		agentName := resolveAllowedAgentName(routeDecision, allowedAgents)
 		if agentName == "" || strings.EqualFold(agentName, "false") {
 			return nil, fmt.Errorf("invalid agent name from routing model")
 		}
@@ -353,6 +364,7 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 		if text == "" {
 			text = strings.TrimSpace(fmt.Sprint(payload["query"]))
 		}
+		text = extractHostUserQuery(payload, text)
 
 		params := map[string]any{
 			"agent_name":     agentName,
@@ -714,6 +726,90 @@ func extractAgentInfoPayload(payload map[string]any) map[string]any {
 		return map[string]any{"agents": agents}
 	}
 	return map[string]any{}
+}
+
+var hostStepTokenRe = regexp.MustCompile(`\[\]\(step://[^\)]*\)`)
+
+func extractHostUserQuery(payload map[string]any, fallback string) string {
+	if payload != nil {
+		for _, key := range []string{"input", "text", "query"} {
+			raw := strings.TrimSpace(fmt.Sprint(payload[key]))
+			if raw == "" || raw == "<nil>" {
+				continue
+			}
+			if q := extractHostCurrentQuestion(raw); q != "" {
+				return q
+			}
+		}
+		if history, ok := payload["history_outputs"].([]any); ok {
+			for _, item := range history {
+				m, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if strings.TrimSpace(fmt.Sprint(m["node_id"])) != "__input__" {
+					continue
+				}
+				out, ok := m["output"].(map[string]any)
+				if !ok {
+					continue
+				}
+				raw := strings.TrimSpace(fmt.Sprint(out["query"]))
+				if raw == "" || raw == "<nil>" {
+					continue
+				}
+				if q := extractHostCurrentQuestion(raw); q != "" {
+					return q
+				}
+			}
+		}
+	}
+	return extractHostCurrentQuestion(strings.TrimSpace(fallback))
+}
+
+func extractHostCurrentQuestion(in string) string {
+	s := strings.TrimSpace(hostStepTokenRe.ReplaceAllString(in, " "))
+	if s == "" {
+		return ""
+	}
+	if i := strings.LastIndex(s, "=== 当前问题 ==="); i >= 0 {
+		q := strings.TrimSpace(s[i+len("=== 当前问题 ==="):])
+		if q != "" {
+			return q
+		}
+	}
+	if i := strings.LastIndex(s, "用户:"); i >= 0 {
+		q := strings.TrimSpace(s[i+len("用户:"):])
+		if q != "" {
+			return q
+		}
+	}
+	if strings.Contains(s, "map[") {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func snapshotAnyForLog(v any, maxLen int) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if maxLen > 0 && len(s) > maxLen {
+			return s[:maxLen] + "...(truncated)"
+		}
+		if s == "" {
+			return "<empty>"
+		}
+		return s
+	}
+	s := strings.TrimSpace(string(b))
+	if maxLen > 0 && len(s) > maxLen {
+		return s[:maxLen] + "...(truncated)"
+	}
+	if s == "" {
+		return "<empty>"
+	}
+	return s
 }
 
 func buildHostWorkflow() (*orchestrator.Workflow, error) {

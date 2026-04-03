@@ -22,6 +22,8 @@ interface AuthPayload {
   displayName?: string
 }
 
+let refreshInFlight: Promise<void> | null = null
+
 async function postAuth(path: string, payload: object): Promise<AuthResponse> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
     method: 'POST',
@@ -48,15 +50,17 @@ function parseAuthUser(data: AuthResponse): AuthUser {
   if (!data.user) {
     throw new Error(data.error || '认证响应缺少用户信息')
   }
+  const existingRoles = Array.isArray(currentUser.value?.roles) ? currentUser.value?.roles ?? [] : []
   const roles = Array.isArray(data.roles) && data.roles.length > 0
     ? data.roles
     : Array.isArray(data.user.roles)
       ? data.user.roles
-      : []
+      : existingRoles
+  const existingPrimaryRole = String(currentUser.value?.primaryRole || '').trim().toLowerCase()
   return {
     ...data.user,
     roles,
-    primaryRole: data.primaryRole || data.user.primaryRole || '',
+    primaryRole: data.primaryRole || data.user.primaryRole || existingPrimaryRole || '',
   }
 }
 
@@ -75,13 +79,25 @@ export async function login(payload: AuthPayload): Promise<AuthUser> {
 }
 
 export async function refreshSession(): Promise<void> {
+  if (refreshInFlight) {
+    return refreshInFlight
+  }
+
   const refreshToken = getRefreshToken()
   if (!refreshToken) {
     throw new Error('缺少刷新令牌')
   }
-  const data = await postAuth('/v1/auth/refresh', { refreshToken })
-  const parsed = assertAuthResponse(data)
-  setAuthSession(parsed.user, parsed.tokens.accessToken, parsed.tokens.refreshToken)
+  refreshInFlight = (async () => {
+    const data = await postAuth('/v1/auth/refresh', { refreshToken })
+    const parsed = assertAuthResponse(data)
+    setAuthSession(parsed.user, parsed.tokens.accessToken, parsed.tokens.refreshToken)
+  })()
+
+  try {
+    await refreshInFlight
+  } finally {
+    refreshInFlight = null
+  }
 }
 
 export async function me(): Promise<AuthUser> {

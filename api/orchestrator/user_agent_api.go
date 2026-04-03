@@ -434,7 +434,27 @@ func (api *UserAgentAPI) executeTest(w http.ResponseWriter, r *http.Request, wor
 	if input == nil {
 		input = make(map[string]any)
 	}
+	input["_debug_test_exec"] = true
+	input["_debug_test_request_id"] = fmt.Sprintf("test-%d", time.Now().UnixNano())
 	logger.Infof("[UserAgentAPI] executeTest workflowId=%s userId=%s inputKeys=%v inputTypes=%v", workflowDef.WorkflowID, userID, mapKeys(input), summarizeInputTypes(input))
+	logger.Infof("[UserAgentAPI][TestDebug] start workflowId=%s userId=%s startNode=%s nodes=%d edges=%d requestId=%v", workflowDef.WorkflowID, userID, workflowDef.StartNodeID, len(workflowDef.Nodes), len(workflowDef.Edges), input["_debug_test_request_id"])
+	if debugEnabled, ok := input["_debug_test_exec"].(bool); ok && debugEnabled {
+		for i, n := range workflowDef.Nodes {
+			logger.Infof(
+				"[UserAgentAPI][TestDebug] node_config requestId=%v idx=%d id=%s type=%s agentId=%s taskType=%s preInput=%s condition=%s config=%s loopConfig=%s",
+				input["_debug_test_request_id"],
+				i,
+				n.ID,
+				n.Type,
+				n.AgentID,
+				n.TaskType,
+				compactJSONForLog(n.PreInput, 500),
+				compactJSONForLog(n.Condition, 500),
+				compactJSONForLog(n.Config, 2000),
+				compactJSONForLog(n.LoopConfig, 1200),
+			)
+		}
+	}
 
 	ctx := r.Context()
 
@@ -451,9 +471,11 @@ func (api *UserAgentAPI) executeTest(w http.ResponseWriter, r *http.Request, wor
 
 	result, err := api.executor.ExecuteWorkflowFromDefinition(ctx, workflowDef, input)
 	if err != nil {
+		logger.Warnf("[UserAgentAPI][TestDebug] failed workflowId=%s requestId=%v err=%v", workflowDef.WorkflowID, input["_debug_test_request_id"], err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	logger.Infof("[UserAgentAPI][TestDebug] done workflowId=%s requestId=%v state=%s nodeResults=%d err=%s", workflowDef.WorkflowID, input["_debug_test_request_id"], result.State, len(result.NodeResults), result.Error)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
@@ -479,6 +501,28 @@ func summarizeInputTypes(m map[string]any) map[string]string {
 		out[k] = fmt.Sprintf("%T", v)
 	}
 	return out
+}
+
+func compactJSONForLog(v any, maxLen int) string {
+	if v == nil {
+		return "null"
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		s := strings.TrimSpace(fmt.Sprintf("%v", v))
+		if s == "" {
+			return "<empty>"
+		}
+		if maxLen > 0 && len(s) > maxLen {
+			return s[:maxLen] + "...<truncated>"
+		}
+		return s
+	}
+	s := string(b)
+	if maxLen > 0 && len(s) > maxLen {
+		return s[:maxLen] + "...<truncated>"
+	}
+	return s
 }
 
 func (api *UserAgentAPI) handlePublishUserAgent(w http.ResponseWriter, r *http.Request, agentID string) {
@@ -800,6 +844,22 @@ func (d TestWorkflowDefinition) ToExecutorDefinition() *executor.WorkflowDefinit
 	nodes := make([]executor.NodeDef, 0, len(d.Nodes))
 	for _, n := range d.Nodes {
 		nn := n
+		if strings.EqualFold(strings.TrimSpace(nn.Type), "chat_model") {
+			if nn.Config == nil {
+				nn.Config = make(map[string]any)
+			}
+			if strings.TrimSpace(nn.OutputType) != "" {
+				if _, ok := nn.Config["output_type"]; !ok {
+					nn.Config["output_type"] = strings.TrimSpace(nn.OutputType)
+				}
+			}
+			if strings.TrimSpace(nn.InputType) != "" {
+				if _, ok := nn.Config["input_type"]; !ok {
+					nn.Config["input_type"] = strings.TrimSpace(nn.InputType)
+				}
+			}
+		}
+		nn.LoopConfig = normalizeExecutorLoopConfig(nn.LoopConfig)
 		if strings.EqualFold(strings.TrimSpace(nn.Type), "tool") {
 			nn.AgentID = ""
 			nn.TaskType = ""
@@ -843,16 +903,7 @@ func convertStorageToExecutorDef(storageDef *storage.WorkflowDefinition) *execut
 
 		var loopConfig map[string]any
 		if n.LoopConfig != nil {
-			loopConfig = make(map[string]any)
-			if v, ok := n.LoopConfig["max_iterations"]; ok {
-				loopConfig["max_iterations"] = v
-			}
-			if v, ok := n.LoopConfig["continue_to"]; ok {
-				loopConfig["continue_to"] = v
-			}
-			if v, ok := n.LoopConfig["exit_to"]; ok {
-				loopConfig["exit_to"] = v
-			}
+			loopConfig = normalizeExecutorLoopConfig(n.LoopConfig)
 		}
 
 		nodes = append(nodes, executor.NodeDef{
@@ -907,6 +958,26 @@ func splitPath(path string) []string {
 		if p != "" {
 			out = append(out, p)
 		}
+	}
+	return out
+}
+
+func normalizeExecutorLoopConfig(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	if v, ok := out["maxIterations"]; ok {
+		out["max_iterations"] = v
+	}
+	if v, ok := out["continueTo"]; ok {
+		out["continue_to"] = v
+	}
+	if v, ok := out["exitTo"]; ok {
+		out["exit_to"] = v
 	}
 	return out
 }
