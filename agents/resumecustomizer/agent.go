@@ -176,11 +176,16 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	if out == "" {
 		out = "No usable extracted text found. Please re-upload a clearer PDF/Word/Excel file."
 	}
+	streamedFinal := resumeStreamedToUser(runResult)
 	if manager != nil {
-		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateCompleted, &internalproto.Message{
-			Role:  internalproto.MessageRoleAgent,
-			Parts: []internalproto.Part{internalproto.NewTextPart(out)},
-		})
+		var doneMsg *internalproto.Message
+		if !streamedFinal {
+			doneMsg = &internalproto.Message{
+				Role:  internalproto.MessageRoleAgent,
+				Parts: []internalproto.Part{internalproto.NewTextPart(out)},
+			}
+		}
+		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateCompleted, doneMsg)
 	}
 	return nil
 }
@@ -200,9 +205,11 @@ func (a *Agent) emitResumeStepEvent(ctx context.Context, manager internaltm.Mana
 		messageZh = "Failed: " + messageZh
 	}
 	ev := internalproto.NewStepEvent("resumecustomizer", "workflow", nodeID, state, messageZh)
-	text := messageZh
+	text := ""
 	if token, tokenErr := internalproto.EncodeStepToken(ev); tokenErr == nil {
-		text = messageZh + "\n" + token
+		text = token
+	} else {
+		text = messageZh
 	}
 	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
 		Role:  internalproto.MessageRoleAgent,
@@ -277,6 +284,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 	client := llm.NewClient(baseURL, apiKey)
 	var pending strings.Builder
 	lastPushAt := time.Time{}
+	streamedToUser := false
 	flushToUser := func(force bool) {
 		if !streamToUser || pending.Len() == 0 {
 			return
@@ -285,6 +293,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 			return
 		}
 		a.emitAssistantDelta(ctx, taskID, pending.String())
+		streamedToUser = true
 		pending.Reset()
 		lastPushAt = time.Now()
 	}
@@ -311,7 +320,10 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 	}
 	a.emitSemanticStep(ctx, taskID, "resumecustomizer.llm.end", internalproto.StepStateEnd, "完成：大模型处理")
 
-	return map[string]any{"response": resp}, nil
+	return map[string]any{
+		"response":         resp,
+		"streamed_to_user": streamedToUser,
+	}, nil
 }
 
 func withTaskManager(ctx context.Context, m internaltm.Manager) context.Context {
@@ -424,6 +436,29 @@ func resumeToTerminalStepState(state orchestrator.TaskState) (internalproto.Step
 	default:
 		return "", false
 	}
+}
+
+func resumeStreamedToUser(runResult orchestrator.RunResult) bool {
+	for _, nr := range runResult.NodeResults {
+		if nr.Output == nil {
+			continue
+		}
+		v, ok := nr.Output["streamed_to_user"]
+		if !ok {
+			continue
+		}
+		switch t := v.(type) {
+		case bool:
+			if t {
+				return true
+			}
+		case string:
+			if strings.EqualFold(strings.TrimSpace(t), "true") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func extractResumeNodeQuery(payload map[string]any) string {

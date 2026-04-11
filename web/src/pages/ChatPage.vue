@@ -62,6 +62,16 @@ let monitorPollTimer: number | null = null
 
 const stepScroller = ref<HTMLDivElement | null>(null)
 const stepAutoFollow = ref(true)
+const messageScroller = ref<HTMLDivElement | null>(null)
+const messageAutoFollow = ref(true)
+
+const liveStreamConversationId = ref('')
+const liveStreamMessageId = ref('')
+const liveStreamContent = ref('')
+let liveStreamPending = ''
+let liveStreamFlushTimer: number | null = null
+
+const STREAM_FLUSH_INTERVAL_MS = 50
 
 if (conversations.value.length === 0) {
   const initial = createConversation(selectedModel.value)
@@ -96,10 +106,24 @@ watch(activeConversation, (value) => {
   }
   selectedModel.value = value.model
   stepAutoFollow.value = true
+  messageAutoFollow.value = true
 
   void nextTick(() => {
     scrollStepsToEnd(true)
+    scrollMessagesToEnd(true)
   })
+})
+
+watch(isStreaming, async (streaming) => {
+  if (streaming) {
+    return
+  }
+  const runId = activeConversation.value?.runId ?? ''
+  const taskId = activeConversation.value?.taskId ?? ''
+  if (runId) {
+    await pollRunOnce(runId)
+  }
+  await pollMonitorStepsOnce(runId, taskId)
 })
 
 watch(
@@ -127,6 +151,7 @@ watch(
 onBeforeUnmount(() => {
   stopRunPolling()
   stopMonitorPolling()
+  clearLiveStreamFlushTimer()
   if (unsubscribeGlobalAgent) {
     unsubscribeGlobalAgent()
     unsubscribeGlobalAgent = null
@@ -143,6 +168,7 @@ onMounted(() => {
   })
   void nextTick(() => {
     scrollStepsToEnd(true)
+    scrollMessagesToEnd(true)
   })
 })
 
@@ -195,19 +221,19 @@ function createConversation(model: AgentModel): Conversation {
   }
 }
 
-function updateConversation(conversationId: string, updater: (target: Conversation) => void): void {
-  conversations.value = conversations.value.map((item) => {
-    if (item.id !== conversationId) {
-      return item
-    }
-    const cloned: Conversation = {
-      ...item,
-      messages: [...item.messages],
-      updatedAt: nowIso(),
-    }
-    updater(cloned)
-    return cloned
-  })
+function updateConversation(
+  conversationId: string,
+  updater: (target: Conversation) => void,
+  options?: { touchUpdatedAt?: boolean },
+): void {
+  const target = conversations.value.find((item) => item.id === conversationId)
+  if (!target) {
+    return
+  }
+  updater(target)
+  if (options?.touchUpdatedAt !== false) {
+    target.updatedAt = nowIso()
+  }
 }
 
 function startConversation(): void {
@@ -446,7 +472,104 @@ function isLatestAssistantMessage(msg: ChatMessage): boolean {
 }
 
 function showInlineProgress(msg: ChatMessage): boolean {
-  return isStreaming.value && isLatestAssistantMessage(msg) && semanticProgress.value.length > 0
+  return isLatestAssistantMessage(msg) && semanticProgress.value.length > 0
+}
+
+function isStreamingAssistantMessage(msg: ChatMessage): boolean {
+  if (!isLatestAssistantMessage(msg) || !isStreaming.value) {
+    return false
+  }
+  if (activeConversationId.value !== liveStreamConversationId.value) {
+    return false
+  }
+  return msg.id === liveStreamMessageId.value
+}
+
+function messageContentForRender(msg: ChatMessage): string {
+  if (isStreamingAssistantMessage(msg)) {
+    return liveStreamContent.value
+  }
+  return msg.content ?? ''
+}
+
+function clearLiveStreamFlushTimer(): void {
+  if (liveStreamFlushTimer != null) {
+    window.clearTimeout(liveStreamFlushTimer)
+    liveStreamFlushTimer = null
+  }
+}
+
+function isMessagesNearBottom(threshold = 36): boolean {
+  const el = messageScroller.value
+  if (!el) {
+    return true
+  }
+  const distanceToBottom = el.scrollHeight - (el.scrollTop + el.clientHeight)
+  return distanceToBottom <= threshold
+}
+
+function scrollMessagesToEnd(force = false): void {
+  const el = messageScroller.value
+  if (!el) {
+    return
+  }
+  if (!force && !messageAutoFollow.value) {
+    return
+  }
+  el.scrollTop = el.scrollHeight
+}
+
+function onMessagesScroll(): void {
+  messageAutoFollow.value = isMessagesNearBottom()
+}
+
+function beginLiveStream(conversationId: string, messageId: string): void {
+  clearLiveStreamFlushTimer()
+  liveStreamPending = ''
+  liveStreamConversationId.value = conversationId
+  liveStreamMessageId.value = messageId
+  liveStreamContent.value = ''
+  messageAutoFollow.value = true
+}
+
+function flushLiveStream(forceScroll = false): void {
+  clearLiveStreamFlushTimer()
+  if (liveStreamPending.length === 0) {
+    return
+  }
+  liveStreamContent.value += liveStreamPending
+  liveStreamPending = ''
+  if (forceScroll || messageAutoFollow.value) {
+    void nextTick(() => {
+      scrollMessagesToEnd(forceScroll)
+    })
+  }
+}
+
+function enqueueLiveStreamChunk(chunk: string): void {
+  if (!chunk) {
+    return
+  }
+  liveStreamPending += chunk
+  if (liveStreamFlushTimer != null) {
+    return
+  }
+  liveStreamFlushTimer = window.setTimeout(() => {
+    flushLiveStream(false)
+  }, STREAM_FLUSH_INTERVAL_MS)
+}
+
+function endLiveStream(conversationId: string, messageId: string): string {
+  flushLiveStream(true)
+  if (liveStreamConversationId.value !== conversationId || liveStreamMessageId.value !== messageId) {
+    return ''
+  }
+  const finalText = liveStreamContent.value
+  liveStreamConversationId.value = ''
+  liveStreamMessageId.value = ''
+  liveStreamContent.value = ''
+  liveStreamPending = ''
+  return finalText
 }
 
 
@@ -669,6 +792,9 @@ async function pollMonitorStepsOnce(runId: string, taskId: string): Promise<void
 function startMonitorPolling(runId: string, taskId: string): void {
   stopMonitorPolling()
   monitorPollTimer = window.setInterval(async () => {
+    if (isStreaming.value) {
+      return
+    }
     await pollMonitorStepsOnce(runId, taskId)
   }, 1200)
 }
@@ -695,6 +821,9 @@ async function pollRunOnce(runId: string): Promise<void> {
 function startRunPolling(runId: string): void {
   stopRunPolling()
   runPollTimer = window.setInterval(async () => {
+    if (isStreaming.value) {
+      return
+    }
     await pollRunOnce(runId)
   }, 600)
 }
@@ -796,6 +925,10 @@ async function sendMessage(): Promise<void> {
       draft.title = content.slice(0, 42)
     }
   })
+  beginLiveStream(conversationId, assistantMessage.id)
+  void nextTick(() => {
+    scrollMessagesToEnd(true)
+  })
 
   prompt.value = ''
   draftUploads.value = []
@@ -863,7 +996,17 @@ async function sendMessage(): Promise<void> {
         }
       }
 
-      updateConversation(conversationId, (draft) => {
+      if (cleanedChunk.length > 0) {
+        enqueueLiveStreamChunk(cleanedChunk)
+      }
+
+      const shouldUpdateConversation =
+        Boolean(parsedTaskId || parsedUserId || parsedRunId) ||
+        filteredSteps.length > 0 ||
+        Boolean(chunk.done)
+
+      if (shouldUpdateConversation) {
+        updateConversation(conversationId, (draft) => {
         if (parsedTaskId) {
           draft.taskId = parsedTaskId
         }
@@ -874,7 +1017,7 @@ async function sendMessage(): Promise<void> {
           draft.runId = parsedRunId
         }
 
-          if (filteredSteps.length > 0) {
+        if (filteredSteps.length > 0) {
           const existing = draft.stepEvents ?? []
           const seen = new Set(existing.map((ev) => `${ev.ts}|${ev.agent}|${ev.name}|${ev.state}`))
           for (const ev of filteredSteps) {
@@ -887,24 +1030,21 @@ async function sendMessage(): Promise<void> {
           draft.stepEvents = existing.slice(-300)
         }
 
-           const assistant = draft.messages.find((item) => item.id === assistantMessage.id)
+        const assistant = draft.messages.find((item) => item.id === assistantMessage.id)
         if (assistant) {
-          if (cleanedChunk.trim().length > 0) {
-            const prev = assistant.content || ''
-            if (cleanedChunk.startsWith(prev)) {
-              assistant.content = cleanedChunk
-            } else if (!prev.startsWith(cleanedChunk)) {
-              assistant.content += cleanedChunk
-            }
+          if (chunk.done) {
+            assistant.status = 'completed'
+          } else if (assistant.status !== 'running') {
+            assistant.status = inferStatus(contentChunk) ?? 'running'
           }
-          assistant.status = chunk.done ? 'completed' : inferStatus(contentChunk) ?? 'running'
         }
 
         const user = draft.messages.find((item) => item.id === userMessage.id)
-        if (user) {
+        if (user && user.status !== 'completed') {
           user.status = 'completed'
         }
-      })
+        }, { touchUpdatedAt: false })
+      }
 
      if (filteredSteps.length > 0) {
         await nextTick()
@@ -919,6 +1059,14 @@ async function sendMessage(): Promise<void> {
     if (status.value !== 'completed') {
       status.value = 'completed'
     }
+    const finalStreamText = endLiveStream(conversationId, assistantMessage.id)
+    updateConversation(conversationId, (draft) => {
+      const assistant = draft.messages.find((item) => item.id === assistantMessage.id)
+      if (assistant) {
+        assistant.content = finalStreamText
+        assistant.status = 'completed'
+      }
+    })
   } catch (error) {
     const canceled = error instanceof Error && error.name === 'AbortError'
     status.value = canceled ? 'canceled' : 'failed'
@@ -927,6 +1075,7 @@ async function sendMessage(): Promise<void> {
       errorText.value = '请求已取消。'
     }
 
+    const partialStreamText = endLiveStream(conversationId, assistantMessage.id)
     updateConversation(conversationId, (draft) => {
       const user = draft.messages.find((item) => item.id === userMessage.id)
       if (user && user.status === 'running') {
@@ -934,6 +1083,9 @@ async function sendMessage(): Promise<void> {
       }
       const assistant = draft.messages.find((item) => item.id === assistantMessage.id)
       if (assistant) {
+        if (partialStreamText) {
+          assistant.content = partialStreamText
+        }
         assistant.status = canceled ? 'canceled' : 'failed'
       }
     })
@@ -1134,8 +1286,12 @@ function renderMarkdown(content: string): string {
         </p>
       </section>
 
-      <section class="messages">
-        <article v-for="msg in activeConversation.messages" :key="msg.id" :class="['message', msg.role]">
+      <section class="messages" ref="messageScroller" @scroll.passive="onMessagesScroll">
+        <article
+          v-for="msg in activeConversation.messages"
+          :key="msg.id"
+          :class="['message', msg.role, { streaming: isStreamingAssistantMessage(msg) }]"
+        >
           <header>
             <strong>{{ msg.role === 'user' ? '你' : '助手' }}</strong>
             <span>{{ formatTime(msg.createdAt) }}</span>
@@ -1149,7 +1305,8 @@ function renderMarkdown(content: string): string {
               </li>
             </ul>
           </section>
-          <div v-if="msg.content" class="content markdown" v-html="renderMarkdown(msg.content)"></div>
+          <p v-if="messageContentForRender(msg) && isStreamingAssistantMessage(msg)" class="content">{{ messageContentForRender(msg) }}</p>
+          <div v-else-if="messageContentForRender(msg)" class="content markdown" v-html="renderMarkdown(messageContentForRender(msg))"></div>
           <p v-else class="content">{{ msg.role === 'assistant' ? '...' : '' }}</p>
           <ul v-if="msg.attachments && msg.attachments.length" class="attachment-list">
             <li v-for="file in msg.attachments" :key="file.id">{{ file.name }} ({{ file.size }} bytes)</li>

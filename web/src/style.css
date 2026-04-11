@@ -1040,6 +1040,10 @@ select:focus {
   animation: rise 0.22s ease;
 }
 
+.message.streaming {
+  animation: none;
+}
+
 .message.user {
   background: #f7fbf8;
   border-color: #d2e7db;
