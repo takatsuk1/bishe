@@ -36,8 +36,12 @@ host_agent:
       server_url: http://127.0.0.1:9994
     - name: financehelper
       server_url: http://127.0.0.1:9995
-    - name: memoreminder
-      server_url: http://127.0.0.1:9999
+    - name: resumecustomizer
+      server_url: http://127.0.0.1:9996
+    - name: interviewsimulator
+      server_url: http://127.0.0.1:9998
+    - name: careerradar
+      server_url: http://127.0.0.1:9997
     # - name: knowledgeChat
     #   server_url: http://127.0.0.1:9995
 openai_connector:
@@ -52,8 +56,12 @@ openai_connector:
       server_url: http://127.0.0.1:9994
     - name: financehelper
       server_url: http://127.0.0.1:9995
-    - name: memoreminder
-      server_url: http://127.0.0.1:9999
+    - name: resumecustomizer
+      server_url: http://127.0.0.1:9996
+    - name: interviewsimulator
+      server_url: http://127.0.0.1:9998
+    - name: careerradar
+      server_url: http://127.0.0.1:9997
     - name: host
       server_url: http://127.0.0.1:8080
     # - name: knowledgeChat

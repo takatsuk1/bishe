@@ -30,6 +30,48 @@ var defaultRoles = []Role{
 	{RoleCode: "admin", RoleName: "Administrator", Description: "Full access", Status: 1},
 }
 
+var rolePriorityOrder = map[string]int{
+	"admin":    1,
+	"operator": 2,
+	"user":     3,
+	"viewer":   4,
+}
+
+func rolePriority(roleCode string) int {
+	if v, ok := rolePriorityOrder[strings.ToLower(strings.TrimSpace(roleCode))]; ok {
+		return v
+	}
+	return 100
+}
+
+func pickSingleRoleCode(candidates []string) (string, error) {
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("exactly one role is required")
+	}
+	best := ""
+	bestScore := 101
+	seen := map[string]struct{}{}
+	for _, rc := range candidates {
+		code := strings.TrimSpace(strings.ToLower(rc))
+		if code == "" {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		score := rolePriority(code)
+		if best == "" || score < bestScore {
+			best = code
+			bestScore = score
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("exactly one valid role is required")
+	}
+	return best, nil
+}
+
 func InitMySQL(dsn string) (*MySQLStorage, error) {
 	mysqlStorageOnce.Do(func() {
 		mysqlStorage, mysqlStorageErr = NewMySQLStorage(dsn)
@@ -831,12 +873,34 @@ func (s *MySQLStorage) BindUserRole(ctx context.Context, userID string, roleCode
 	if userID == "" || roleCode == "" {
 		return fmt.Errorf("userID and roleCode are required")
 	}
-	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO user_role (user_id, role_code) VALUES (?, ?) ON DUPLICATE KEY UPDATE role_code = VALUES(role_code)",
-		userID, roleCode,
-	)
-	if err != nil {
-		return fmt.Errorf("bind user role: %w", err)
+
+	var userCount int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM users WHERE user_id = ?",
+		userID,
+	).Scan(&userCount); err != nil {
+		return fmt.Errorf("check user exists: %w", err)
+	}
+	if userCount == 0 {
+		return fmt.Errorf("user not found")
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM role WHERE role_code = ? AND status = 1",
+		roleCode,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("validate role %s: %w", roleCode, err)
+	}
+	if count == 0 {
+		return fmt.Errorf("role not found: %s", roleCode)
+	}
+
+	if _, err := s.db.ExecContext(ctx,
+		"UPDATE users SET role_code = ?, updated_at = NOW() WHERE user_id = ?",
+		roleCode, userID,
+	); err != nil {
+		return fmt.Errorf("update user role: %w", err)
 	}
 	return nil
 }
@@ -846,27 +910,21 @@ func (s *MySQLStorage) ListUserRoles(ctx context.Context, userID string) ([]Role
 	if userID == "" {
 		return nil, fmt.Errorf("userID is required")
 	}
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT r.id, r.role_code, r.role_name, IFNULL(r.description, ''), r.status, r.created_at, r.updated_at FROM role r INNER JOIN user_role ur ON ur.role_code = r.role_code WHERE ur.user_id = ? AND r.status = 1 ORDER BY r.id",
+	var role Role
+	err := s.db.QueryRowContext(ctx,
+		`SELECT r.id, r.role_code, r.role_name, IFNULL(r.description, ''), r.status, r.created_at, r.updated_at
+		 FROM users u
+		 INNER JOIN role r ON r.role_code = u.role_code
+		 WHERE u.user_id = ? AND r.status = 1`,
 		userID,
-	)
+	).Scan(&role.ID, &role.RoleCode, &role.RoleName, &role.Description, &role.Status, &role.CreatedAt, &role.UpdatedAt)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return []Role{}, nil
+		}
 		return nil, fmt.Errorf("list user roles: %w", err)
 	}
-	defer rows.Close()
-
-	roles := make([]Role, 0)
-	for rows.Next() {
-		var role Role
-		if scanErr := rows.Scan(&role.ID, &role.RoleCode, &role.RoleName, &role.Description, &role.Status, &role.CreatedAt, &role.UpdatedAt); scanErr != nil {
-			return nil, fmt.Errorf("scan role: %w", scanErr)
-		}
-		roles = append(roles, role)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate roles: %w", err)
-	}
-	return roles, nil
+	return []Role{role}, nil
 }
 
 func (s *MySQLStorage) GetUserByUsername(ctx context.Context, username string) (*UserAccount, error) {
@@ -957,62 +1015,11 @@ func (s *MySQLStorage) ReplaceUserRoles(ctx context.Context, userID string, role
 	if userCount == 0 {
 		return fmt.Errorf("user not found")
 	}
-	if len(roleCodes) == 0 {
-		return fmt.Errorf("at least one role is required")
-	}
-
-	normalized := make([]string, 0, len(roleCodes))
-	seen := make(map[string]struct{}, len(roleCodes))
-	for _, rc := range roleCodes {
-		code := strings.TrimSpace(strings.ToLower(rc))
-		if code == "" {
-			continue
-		}
-		if _, ok := seen[code]; ok {
-			continue
-		}
-		seen[code] = struct{}{}
-		normalized = append(normalized, code)
-	}
-	if len(normalized) == 0 {
-		return fmt.Errorf("at least one valid role is required")
-	}
-
-	for _, code := range normalized {
-		var count int
-		if err := s.db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM role WHERE role_code = ? AND status = 1",
-			code,
-		).Scan(&count); err != nil {
-			return fmt.Errorf("validate role %s: %w", code, err)
-		}
-		if count == 0 {
-			return fmt.Errorf("role not found: %s", code)
-		}
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
+	code, err := pickSingleRoleCode(roleCodes)
 	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
+		return err
 	}
-	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx, "DELETE FROM user_role WHERE user_id = ?", userID); err != nil {
-		return fmt.Errorf("delete user roles: %w", err)
-	}
-	for _, code := range normalized {
-		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO user_role (user_id, role_code) VALUES (?, ?)",
-			userID, code,
-		); err != nil {
-			return fmt.Errorf("insert user role %s: %w", code, err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-	return nil
+	return s.BindUserRole(ctx, userID, code)
 }
 
 func (s *MySQLStorage) UpdateUserDisplayName(ctx context.Context, userID string, displayName string) error {

@@ -884,22 +884,6 @@ func (e *engine) emitNodeFinished(ctx context.Context, run *workflowRun, workflo
 		DurationMs:     durationMs,
 	})
 
-	if e.monitorSvc.Rules().IsNodeSlow(durationMs) {
-		_ = e.monitorSvc.TriggerAlert(ctx, monitor.TriggerAlertInput{
-			RunID:       run.result.RunID,
-			WorkflowID:  workflowID,
-			TaskID:      run.taskID,
-			UserID:      run.userID,
-			AgentID:     node.AgentID,
-			NodeID:      node.ID,
-			AlertType:   "node_slow",
-			Severity:    "medium",
-			Title:       "Node execution is slow",
-			Content:     fmt.Sprintf("node duration %dms exceeds threshold %dms", durationMs, e.monitorSvc.Rules().NodeSlowThresholdMs),
-			Status:      "open",
-			TriggeredAt: time.Now(),
-		})
-	}
 }
 
 func (e *engine) emitNodeFailed(ctx context.Context, run *workflowRun, workflowID string, node Node, nodeRes NodeRunResult, errMsg string, durationMs int64) {

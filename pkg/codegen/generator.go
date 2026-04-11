@@ -52,6 +52,9 @@ type ToolDefinition struct {
 	ToolType    tools.ToolType
 	Config      map[string]any
 	Parameters  []tools.ToolParameter
+	// SkipFileGeneration controls whether codegen should skip creating/updating
+	// the standalone user_generated_<tool>.go helper for this tool.
+	SkipFileGeneration bool
 }
 
 type GenerateResult struct {
@@ -88,9 +91,19 @@ func (g *CodeGenerator) GenerateAgent(req *AgentGenerateRequest) (*GenerateResul
 	result.ServerFile = serverFile
 
 	for _, toolDef := range req.Tools {
+		if toolDef.SkipFileGeneration {
+			continue
+		}
 		toolCode := g.generateToolCode(&toolDef)
 		newName := sanitizePackageName(toolDef.ToolID)
 		toolFile := filepath.Join(g.config.ToolOutputDir, fmt.Sprintf("user_generated_%s.go", newName))
+		if _, statErr := os.Stat(toolFile); statErr == nil {
+			// Keep previously generated tool file stable unless caller explicitly
+			// decides to remove/regenerate it.
+			continue
+		} else if !os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("stat tool file: %w", statErr)
+		}
 
 		// Compatibility cleanup: old versions used unsafely-sanitized names,
 		// which can coexist and trigger duplicate symbols on rebuild.
@@ -110,6 +123,16 @@ func (g *CodeGenerator) GenerateAgent(req *AgentGenerateRequest) (*GenerateResul
 	}
 
 	return result, nil
+}
+
+func (g *CodeGenerator) ToolFilePath(toolID string) string {
+	newName := sanitizePackageName(toolID)
+	return filepath.Join(g.config.ToolOutputDir, fmt.Sprintf("user_generated_%s.go", newName))
+}
+
+func (g *CodeGenerator) ToolFileExists(toolID string) bool {
+	_, err := os.Stat(g.ToolFilePath(toolID))
+	return err == nil
 }
 
 func (g *CodeGenerator) ensureAgentConfigEntry(agentID string) error {

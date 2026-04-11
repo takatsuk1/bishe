@@ -1,4 +1,4 @@
-﻿package host
+package host
 
 import (
 	"ai/config"
@@ -239,7 +239,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 
 	switch req.NodeType {
 	case orchestrator.NodeTypeChatModel:
-		output, err = w.agent.callChatModel(ctx, taskID, query, req.NodeConfig, req.Payload)
+		output, err = w.agent.callChatModel(ctx, taskID, strings.TrimSpace(req.NodeID), query, req.NodeConfig, req.Payload)
 	case orchestrator.NodeTypeTool:
 		output, err = w.agent.callTool(ctx, taskID, query, req.NodeConfig, req.Payload)
 	default:
@@ -257,7 +257,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
-func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
+func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string, query string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("query is empty")
@@ -293,11 +293,26 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	}
 
 	logger.Infof("[TRACE] host.chatmodel start task=%s intent=%s model=%s url=%s api_key_set=%t query_len=%d", taskID, intent, model, baseURL, apiKey != "", len(finalPrompt))
+	a.emitSemanticStep(ctx, taskID, "host.llm.start", internalproto.StepStateInfo, "正在调用大模型："+nodeID)
 	if baseURL == "" || model == "" {
 		return nil, fmt.Errorf("chat_model config missing url/model")
 	}
 
-	resp, err := llm.NewClient(baseURL, apiKey).ChatCompletion(ctx, model, []llm.Message{{Role: "user", Content: finalPrompt}}, nil, nil)
+	client := llm.NewClient(baseURL, apiKey)
+	var streamBuf strings.Builder
+	lastEmitAt := time.Time{}
+	resp, err := client.ChatCompletionStream(ctx, model, []llm.Message{{Role: "user", Content: finalPrompt}}, nil, nil, func(delta string) error {
+		if strings.TrimSpace(delta) == "" {
+			return nil
+		}
+		streamBuf.WriteString(delta)
+		if !lastEmitAt.IsZero() && time.Since(lastEmitAt) < 150*time.Millisecond {
+			return nil
+		}
+		lastEmitAt = time.Now()
+		a.emitSemanticStep(ctx, taskID, "host.llm.delta", internalproto.StepStateInfo, "正在调用大模型："+truncateText(streamBuf.String(), 140))
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -308,6 +323,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	if intent == "route_agent" {
 		resp = normalizeRouteDecision(resp)
 	}
+	a.emitSemanticStep(ctx, taskID, "host.llm.end", internalproto.StepStateEnd, "完成：大模型处理")
 	logger.Infof("[TRACE] host.chatmodel done task=%s intent=%s resp_len=%d", taskID, intent, len(resp))
 
 	return map[string]any{"response": resp}, nil
@@ -356,6 +372,7 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 		if agentName == "" || strings.EqualFold(agentName, "false") {
 			return nil, fmt.Errorf("invalid agent name from routing model")
 		}
+		a.emitSemanticStep(ctx, taskID, "host.call_agent.start", internalproto.StepStateInfo, "正在调用下游Agent："+agentName)
 
 		text := strings.TrimSpace(fmt.Sprint(payload["text"]))
 		if text == "" {
@@ -384,6 +401,7 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 		if e != nil {
 			return nil, e
 		}
+		a.emitSemanticStep(ctx, taskID, "host.call_agent.end", internalproto.StepStateEnd, "完成：下游Agent返回："+agentName)
 		resp := strings.TrimSpace(fmt.Sprintf("%v", out))
 		if s, ok := out["response"].(string); ok && strings.TrimSpace(s) != "" {
 			resp = strings.TrimSpace(s)
@@ -435,6 +453,22 @@ func taskManagerFromContext(ctx context.Context) internaltm.Manager {
 	}
 	m, _ := ctx.Value(ctxKeyTaskManager{}).(internaltm.Manager)
 	return m
+}
+
+func (a *Agent) emitSemanticStep(ctx context.Context, taskID string, name string, state internalproto.StepState, message string) {
+	manager := taskManagerFromContext(ctx)
+	if manager == nil {
+		return
+	}
+	ev := internalproto.NewStepEvent("host", "semantic", strings.TrimSpace(name), state, strings.TrimSpace(message))
+	token, err := internalproto.EncodeStepToken(ev)
+	if err != nil {
+		return
+	}
+	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
+		Role:  internalproto.MessageRoleAgent,
+		Parts: []internalproto.Part{internalproto.NewTextPart(token)},
+	})
 }
 
 func (a *Agent) startProgressReporter(ctx context.Context, taskID string, runID string, manager internaltm.Manager) func() {
@@ -810,6 +844,14 @@ func snapshotAnyForLog(v any, maxLen int) string {
 		return "<empty>"
 	}
 	return s
+}
+
+func truncateText(input string, max int) string {
+	input = strings.TrimSpace(input)
+	if max <= 0 || len(input) <= max {
+		return input
+	}
+	return strings.TrimSpace(input[:max]) + "..."
 }
 
 func buildHostWorkflow() (*orchestrator.Workflow, error) {

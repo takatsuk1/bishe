@@ -181,8 +181,8 @@ func (a *API) handleUpdateUserRoles(w http.ResponseWriter, r *http.Request, user
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if len(req.Roles) == 0 {
-		http.Error(w, "roles is required", http.StatusBadRequest)
+	if len(req.Roles) != 1 {
+		http.Error(w, "exactly one role is required", http.StatusBadRequest)
 		return
 	}
 

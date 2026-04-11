@@ -675,7 +675,7 @@ function buildExampleWorkflowDefinition(id: string): WorkflowDefinition {
     const baseY = 120
     const agent = 'host'
     const s0 = addStepAt(20, baseY, 'flow_start', 'orchestrator', '开始', 'start')
-    const n0 = addStepAt(140, baseY, 'host_agent_info', agent, '获取可调用 Agent', 'tool', 'host', 'agent_info_fetch')
+    const n0 = addStepAt(140, baseY, 'host_agent_info', agent, '获取可调用助手', 'tool', 'host', 'agent_info_fetch')
     const n1 = addStepAt(380, baseY, 'host_validate', agent, '路由决策(chat_model)', 'chat_model', 'host', 'chat_model_decide')
     const c1 = addCondAt(660, baseY, 'host_is_direct', agent, '是否直接回答', 'chat_model.response == "false"')
     const r2 = addStepAt(960, 60, 'host_delegate', agent, '调用目标 agent', 'tool', 'host', 'call_agent')
@@ -1947,7 +1947,7 @@ onBeforeUnmount(() => {
 
                 <template v-if="selectedNode.agentId === 'send_task' && selectedNode.taskType === 'delegate'">
                   <label>
-                    目标 Agent
+                    目标助手
                     <select
                       :value="getDelegateTarget(selectedNode)"
                       @change="setDelegateTarget(selectedNode.id, ($event.target as HTMLSelectElement).value)"
@@ -1970,7 +1970,7 @@ onBeforeUnmount(() => {
 
                 <template v-else-if="selectedNode.agentId === 'noop' && selectedNode.taskType === 'noop'">
                   <label>
-                    所属 Agent
+                    所属助手
                     <select
                       :value="getUiAgent(selectedNode)"
                       @change="setUiAgent(selectedNode.id, ($event.target as HTMLSelectElement).value)"
@@ -2103,7 +2103,7 @@ onBeforeUnmount(() => {
 
                 <template v-else>
                   <label>
-                    Agent
+                    助手
                     <input type="text" v-model="selectedNode.agentId" placeholder="host / send_task / deepresearch" />
                   </label>
                   <label>
@@ -2212,7 +2212,7 @@ onBeforeUnmount(() => {
                 <input type="text" :value="selectedNode.type" disabled />
               </label>
               <label>
-                所属 Agent
+                所属助手
                 <input type="text" :value="getUiAgent(selectedNode)" disabled />
               </label>
               <label>
@@ -2247,10 +2247,10 @@ onBeforeUnmount(() => {
       </section>
     </main>
 
-    <!-- Agent测试模态框 -->
+    <!-- 助手测试模态框 -->
     <div v-if="showAgentTester && !readOnlyMode" class="modal-overlay" @click.self="closeAgentTester">
       <div class="agent-tester-modal">
-        <h2>Agent测试与发布</h2>
+        <h2>助手测试与发布</h2>
         
         <div class="tester-section">
           <h3>测试工作流</h3>
@@ -2281,7 +2281,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="currentAgent" class="current-agent-info">
-          <h3>已发布Agent</h3>
+          <h3>已发布助手</h3>
           <div class="agent-info-grid">
             <div><strong>名称:</strong> {{ currentAgent.name }}</div>
             <div><strong>状态:</strong> {{ currentAgent.status }}</div>

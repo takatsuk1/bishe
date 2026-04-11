@@ -1,8 +1,9 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { AGENTS, DEFAULT_AGENT, getAgentDescription } from '../lib/agents'
+import { getGlobalSelectedAgent, onGlobalSelectedAgentChange, setGlobalSelectedAgent } from '../lib/agentSelection'
 import { currentUser, getAccessToken } from '../lib/authStore'
 import { refreshSession } from '../lib/authApi'
 import { getMonitorRunFamily, listMonitorRunEvents, listMonitorRuns } from '../lib/monitorApi'
@@ -25,18 +26,32 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:1100
 const MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 const currentUserId = currentUser.value?.userId ?? ''
 
+interface UploadFileResponseItem {
+  id: string
+  name: string
+  size: number
+  type: string
+  extracted_text?: string
+  warning?: string
+}
+
+interface UploadFilesResponse {
+  files: UploadFileResponseItem[]
+}
+
 marked.setOptions({ gfm: true, breaks: true })
 
 const conversations = ref<Conversation[]>(loadConversations(currentUserId))
 const activeConversationId = ref<string>('')
 const prompt = ref('')
-const selectedModel = ref<AgentModel>(DEFAULT_AGENT)
+const selectedModel = ref<AgentModel>(getGlobalSelectedAgent() || DEFAULT_AGENT)
 const availableAgents = ref<{ label: string; value: AgentModel; description: string }[]>([...AGENTS])
 const isStreaming = ref(false)
 const status = ref<TaskState>('queued')
 const errorText = ref('')
 const draftUploads = ref<UploadedFileMeta[]>([])
 let abortController: AbortController | null = null
+let unsubscribeGlobalAgent: (() => void) | null = null
 
 const runSnapshot = ref<RunResult | null>(null)
 const runPollError = ref('')
@@ -46,6 +61,7 @@ const monitorStepError = ref('')
 let monitorPollTimer: number | null = null
 
 const stepScroller = ref<HTMLDivElement | null>(null)
+const stepAutoFollow = ref(true)
 
 if (conversations.value.length === 0) {
   const initial = createConversation(selectedModel.value)
@@ -62,6 +78,9 @@ const activeConversation = computed(() =>
 )
 
 const canSend = computed(() => prompt.value.trim().length > 0 && !isStreaming.value)
+const selectedAgentMeta = computed(() =>
+  availableAgents.value.find((agent) => agent.value === selectedModel.value),
+)
 
 watch(
   conversations,
@@ -76,9 +95,10 @@ watch(activeConversation, (value) => {
     return
   }
   selectedModel.value = value.model
+  stepAutoFollow.value = true
 
   void nextTick(() => {
-    scrollStepsToEnd()
+    scrollStepsToEnd(true)
   })
 })
 
@@ -107,12 +127,22 @@ watch(
 onBeforeUnmount(() => {
   stopRunPolling()
   stopMonitorPolling()
+  if (unsubscribeGlobalAgent) {
+    unsubscribeGlobalAgent()
+    unsubscribeGlobalAgent = null
+  }
 })
 
 onMounted(() => {
   void loadAvailableAgents()
+  unsubscribeGlobalAgent = onGlobalSelectedAgentChange((agent) => {
+    if (!availableAgents.value.some((item) => item.value === agent)) {
+      return
+    }
+    onModelChange(agent)
+  })
   void nextTick(() => {
-    scrollStepsToEnd()
+    scrollStepsToEnd(true)
   })
 })
 
@@ -132,6 +162,7 @@ async function loadAvailableAgents(): Promise<void> {
 
     if (!availableAgents.value.some((agent) => agent.value === selectedModel.value)) {
       selectedModel.value = availableAgents.value[0].value
+      setGlobalSelectedAgent(selectedModel.value)
       if (activeConversation.value) {
         updateConversation(activeConversation.value.id, (draft) => {
           draft.model = selectedModel.value
@@ -223,6 +254,7 @@ function onModelChange(model: AgentModel): void {
     return
   }
   selectedModel.value = model
+  setGlobalSelectedAgent(model)
   updateConversation(activeConversation.value.id, (draft) => {
     draft.model = model
   })
@@ -288,9 +320,135 @@ function stepChipClass(state: StepEvent['state']): TaskState {
 }
 
 const activeStepEvents = computed(() => activeConversation.value?.stepEvents ?? [])
-const detailedStepEvents = computed(() =>
-  monitorStepEvents.value.length > 0 ? monitorStepEvents.value : activeStepEvents.value,
+const detailedStepEvents = computed(() => {
+  const merged = [...activeStepEvents.value, ...monitorStepEvents.value]
+  const dedup = new Map<string, StepEvent>()
+  for (const ev of merged) {
+    const key = `${ev.ts}|${ev.agent}|${ev.phase}|${ev.name}|${ev.state}|${ev.messageZh}`
+    if (!dedup.has(key)) {
+      dedup.set(key, ev)
+    }
+  }
+  return [...dedup.values()].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
+})
+
+const runStepEvents = computed(() =>
+  detailedStepEvents.value.filter((ev) => {
+    const phase = (ev.phase ?? '').trim().toLowerCase()
+    const name = (ev.name ?? '').trim().toLowerCase()
+    if (phase === 'semantic') {
+      return false
+    }
+    if (name.includes('.llm.') || name.includes('.semantic.')) {
+      return false
+    }
+    return true
+  }),
 )
+
+const latestAssistantMessageId = computed(() => {
+  const msgs = activeConversation.value?.messages ?? []
+  for (let i = msgs.length - 1; i >= 0; i -= 1) {
+    if (msgs[i].role === 'assistant') {
+      return msgs[i].id
+    }
+  }
+  return ''
+})
+
+const semanticProgress = computed<StepEvent[]>(() => {
+  // Inline progress in assistant message should come from chat stream step tokens only.
+  // Do not mix monitor polling events here, otherwise frequent polling causes visible flicker.
+  const semantic = activeStepEvents.value.filter((ev) => {
+    const phase = (ev.phase ?? '').trim().toLowerCase()
+    const name = (ev.name ?? '').trim().toLowerCase()
+    return phase === 'semantic' || name.includes('.semantic.') || name.includes('.llm.')
+  })
+  if (semantic.length === 0) {
+    return []
+  }
+  const dedup = new Map<string, StepEvent>()
+  const currentLLMNodeByAgent = new Map<string, string>()
+  for (const ev of semantic) {
+    const name = (ev.name ?? '').trim().toLowerCase()
+    const agent = (ev.agent ?? '').trim().toLowerCase()
+    const msg = (ev.messageZh ?? '').trim()
+
+    if (name.endsWith('.llm.start')) {
+      const idx = msg.indexOf('：')
+      if (idx >= 0) {
+        const nodeText = msg.slice(idx + 1).trim()
+        if (nodeText) {
+          currentLLMNodeByAgent.set(agent, nodeText)
+        }
+      }
+      const nodeText = currentLLMNodeByAgent.get(agent) ?? 'chat_model'
+      dedup.set(`${agent}|llm|${nodeText}|start`, { ...ev, messageZh: `正在调用大模型：${nodeText}` })
+      continue
+    }
+
+    if (name.endsWith('.llm.delta') || name.endsWith('.llm.streaming')) {
+      // Drop high-frequency token-level events to avoid flicker.
+      continue
+    }
+
+    if (name.endsWith('.llm.end')) {
+      const nodeText = currentLLMNodeByAgent.get(agent) ?? 'chat_model'
+      dedup.set(`${agent}|llm|${nodeText}|end`, { ...ev, messageZh: '完成：大模型处理' })
+      continue
+    }
+
+    if (name.endsWith('.tool.start')) {
+      dedup.set(`${agent}|tool|start`, { ...ev, messageZh: '正在调用工具' })
+      continue
+    }
+    if (name.endsWith('.tool.end')) {
+      dedup.set(`${agent}|tool|end`, { ...ev, messageZh: '完成：工具调用' })
+      continue
+    }
+    if (name.endsWith('.call_agent.start')) {
+      dedup.set(`${agent}|call_agent|start`, { ...ev, messageZh: '正在调用下游Agent' })
+      continue
+    }
+    if (name.endsWith('.call_agent.end')) {
+      dedup.set(`${agent}|call_agent|end`, { ...ev, messageZh: '完成：下游Agent返回' })
+      continue
+    }
+    if (name.endsWith('.research.start')) {
+      dedup.set(`${agent}|research|start`, { ...ev, messageZh: '正在检索信息' })
+      continue
+    }
+    if (name.endsWith('.research.end')) {
+      dedup.set(`${agent}|research|end`, { ...ev, messageZh: '完成：检索信息' })
+      continue
+    }
+
+    if (ev.state === 'error') {
+      dedup.set(`${agent}|generic|error`, { ...ev, messageZh: '执行失败' })
+      continue
+    }
+    if (ev.state === 'end') {
+      dedup.set(`${agent}|generic|end`, { ...ev, messageZh: '完成：执行步骤' })
+      continue
+    }
+    if (ev.state === 'start' || ev.state === 'info') {
+      dedup.set(`${agent}|generic|start`, { ...ev, messageZh: '正在执行步骤' })
+      continue
+    }
+
+    dedup.set(`${ev.ts}|${ev.agent}|${ev.phase}|${ev.name}|${ev.state}|${ev.messageZh}`, ev)
+  }
+  return [...dedup.values()].slice(-8)
+})
+
+function isLatestAssistantMessage(msg: ChatMessage): boolean {
+  return msg.role === 'assistant' && msg.id === latestAssistantMessageId.value
+}
+
+function showInlineProgress(msg: ChatMessage): boolean {
+  return isStreaming.value && isLatestAssistantMessage(msg) && semanticProgress.value.length > 0
+}
+
 
 watch(
   () => [detailedStepEvents.value.length, activeConversationId.value] as const,
@@ -300,12 +458,32 @@ watch(
   },
 )
 
-function scrollStepsToEnd(): void {
+function scrollStepsToEnd(force = false): void {
   const el = stepScroller.value
   if (!el) {
     return
   }
+  if (!force && !stepAutoFollow.value) {
+    return
+  }
   el.scrollTop = el.scrollHeight
+}
+
+function onStepScroll(): void {
+  const el = stepScroller.value
+  if (!el) {
+    return
+  }
+  const threshold = 24
+  const distanceToBottom = el.scrollHeight - (el.scrollTop + el.clientHeight)
+  stepAutoFollow.value = distanceToBottom <= threshold
+}
+
+function jumpStepsToBottom(): void {
+  stepAutoFollow.value = true
+  void nextTick(() => {
+    scrollStepsToEnd(true)
+  })
 }
 
 function isTerminalRunState(state: string): boolean {
@@ -554,7 +732,16 @@ function buildRequest(conversation: Conversation, message: ChatMessage): ChatReq
   const uploadHint =
     message.attachments && message.attachments.length > 0
       ? `\n\n[upload]\n${message.attachments
-          .map((item) => `${item.name} (${item.type || 'unknown'}, ${item.size} bytes)`)
+          .map((item) => {
+            const lines: string[] = [`${item.name} (${item.type || 'unknown'}, ${item.size} bytes)`]
+            if (item.extractedText && item.extractedText.trim().length > 0) {
+              lines.push(`[content]\n${item.extractedText.trim()}`)
+            }
+            if (item.parseWarning && item.parseWarning.trim().length > 0) {
+              lines.push(`[warning] ${item.parseWarning.trim()}`)
+            }
+            return lines.join('\n')
+          })
           .join('\n')}`
       : ''
 
@@ -612,6 +799,7 @@ async function sendMessage(): Promise<void> {
 
   prompt.value = ''
   draftUploads.value = []
+  stepAutoFollow.value = true
 
   try {
     const sendChatRequest = async (retry = true): Promise<Response> => {
@@ -652,6 +840,11 @@ async function sendMessage(): Promise<void> {
       const decodedSteps = stepPayloads
         .map((payload) => decodeStepPayload(payload))
         .filter((item): item is StepEvent => Boolean(item))
+      const filteredSteps = decodedSteps.filter((ev) => {
+        const name = (ev.name ?? '').trim().toLowerCase()
+        return !(name.endsWith('.llm.delta') || name.endsWith('.llm.streaming'))
+      })
+
 
       let cleanedChunk = contentChunk
         .replace(/\[]\(task:\/\/[^)]+\)/g, '')
@@ -659,8 +852,8 @@ async function sendMessage(): Promise<void> {
         .replace(/\[]\(run:\/\/[^)]+\)/g, '')
         .replace(/\[]\(step:\/\/[^)]+\)/g, '')
 
-      if (decodedSteps.length > 0) {
-        for (const ev of decodedSteps) {
+      if (filteredSteps.length > 0) {
+        for (const ev of filteredSteps) {
           const msg = ev.messageZh?.trim()
           if (!msg) {
             continue
@@ -681,10 +874,10 @@ async function sendMessage(): Promise<void> {
           draft.runId = parsedRunId
         }
 
-        if (decodedSteps.length > 0) {
+          if (filteredSteps.length > 0) {
           const existing = draft.stepEvents ?? []
           const seen = new Set(existing.map((ev) => `${ev.ts}|${ev.agent}|${ev.name}|${ev.state}`))
-          for (const ev of decodedSteps) {
+          for (const ev of filteredSteps) {
             const key = `${ev.ts}|${ev.agent}|${ev.name}|${ev.state}`
             if (!seen.has(key)) {
               existing.push(ev)
@@ -694,10 +887,15 @@ async function sendMessage(): Promise<void> {
           draft.stepEvents = existing.slice(-300)
         }
 
-        const assistant = draft.messages.find((item) => item.id === assistantMessage.id)
+           const assistant = draft.messages.find((item) => item.id === assistantMessage.id)
         if (assistant) {
           if (cleanedChunk.trim().length > 0) {
-            assistant.content += cleanedChunk
+            const prev = assistant.content || ''
+            if (cleanedChunk.startsWith(prev)) {
+              assistant.content = cleanedChunk
+            } else if (!prev.startsWith(cleanedChunk)) {
+              assistant.content += cleanedChunk
+            }
           }
           assistant.status = chunk.done ? 'completed' : inferStatus(contentChunk) ?? 'running'
         }
@@ -708,7 +906,7 @@ async function sendMessage(): Promise<void> {
         }
       })
 
-      if (decodedSteps.length > 0) {
+     if (filteredSteps.length > 0) {
         await nextTick()
         scrollStepsToEnd()
       }
@@ -724,7 +922,7 @@ async function sendMessage(): Promise<void> {
   } catch (error) {
     const canceled = error instanceof Error && error.name === 'AbortError'
     status.value = canceled ? 'canceled' : 'failed'
-    errorText.value = canceled ? 'Request canceled.' : (error as Error).message
+    errorText.value = canceled ? '请求已取消。' : (error as Error).message
     if (canceled) {
       errorText.value = '请求已取消。'
     }
@@ -762,7 +960,7 @@ function onFileInput(event: Event): void {
   if (!files || files.length === 0) {
     return
   }
-  appendFiles(Array.from(files))
+  void appendFiles(Array.from(files))
   input.value = ''
 }
 
@@ -771,21 +969,55 @@ function onDrop(event: DragEvent): void {
   if (!event.dataTransfer?.files) {
     return
   }
-  appendFiles(Array.from(event.dataTransfer.files))
+  void appendFiles(Array.from(event.dataTransfer.files))
 }
 
-function appendFiles(files: File[]): void {
+async function appendFiles(files: File[]): Promise<void> {
   const validFiles = files.filter((file) => file.size <= MAX_UPLOAD_SIZE)
-  const mapped: UploadedFileMeta[] = validFiles.map((file) => ({
-    id: uuid(),
-    name: file.name,
-    size: file.size,
-    type: file.type,
-  }))
-  draftUploads.value = [...draftUploads.value, ...mapped]
-
   if (validFiles.length !== files.length) {
     errorText.value = '部分文件超过 20MB，已跳过。'
+  }
+  if (validFiles.length === 0) {
+    return
+  }
+
+  const formData = new FormData()
+  for (const file of validFiles) {
+    formData.append('files', file, file.name)
+  }
+
+  const doUpload = async (retry = true): Promise<Response> => {
+    const token = getAccessToken()
+    const res = await fetch(`${API_BASE_URL}/v1/files/upload`, {
+      method: 'POST',
+      body: formData,
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
+    if (res.status === 401 && retry) {
+      await refreshSession()
+      return doUpload(false)
+    }
+    return res
+  }
+
+  try {
+    const response = await doUpload()
+    if (!response.ok) {
+      throw new Error(`附件上传失败（${response.status}）`)
+    }
+    const payload = (await response.json()) as UploadFilesResponse
+    const mapped: UploadedFileMeta[] = (payload.files ?? []).map((item) => ({
+      id: item.id || uuid(),
+      fileId: item.id,
+      name: item.name,
+      size: item.size,
+      type: item.type,
+      extractedText: item.extracted_text,
+      parseWarning: item.warning,
+    }))
+    draftUploads.value = [...draftUploads.value, ...mapped]
+  } catch (err) {
+    errorText.value = err instanceof Error ? err.message : '附件上传失败'
   }
 }
 
@@ -834,30 +1066,22 @@ function renderMarkdown(content: string): string {
 
     <main class="chat-panel chat-page" v-if="activeConversation">
       <header class="toolbar">
-        <label>
-          选择 Agent
-          <select
-            :value="selectedModel"
-            :disabled="isStreaming"
-            @change="onModelChange(($event.target as HTMLSelectElement).value as AgentModel)"
-          >
-            <option v-for="agent in availableAgents" :key="agent.value" :value="agent.value">
-              {{ agent.label }}
-            </option>
-          </select>
-        </label>
+        <div class="toolbar-main">
+          <strong>当前助手：{{ selectedAgentMeta?.label ?? selectedModel }}</strong>
+          <span class="task-text">标识：{{ selectedModel }}</span>
+        </div>
 
         <div class="status-board">
           <span :class="['chip', status]">{{ formatTaskState(status) }}</span>
-          <span class="task-text">task: {{ activeConversation.taskId ?? '—' }}</span>
-          <span class="task-text">run: {{ activeConversation.runId ?? '—' }}</span>
+          <span class="task-text">任务编号：{{ activeConversation.taskId ?? '—' }}</span>
+          <span class="task-text">运行编号：{{ activeConversation.runId ?? '—' }}</span>
         </div>
       </header>
 
       <section class="run-steps" v-if="activeConversation.runId">
         <div class="run-steps-header">
           <strong>编排进度</strong>
-          <span class="task-text" v-if="runSnapshot">{{ runSnapshot.state }}</span>
+          <span class="task-text" v-if="runSnapshot">{{ formatTaskState(runSnapshot.state as TaskState) }}</span>
           <span class="task-text" v-if="runPollError">{{ runPollError }}</span>
         </div>
         <p class="task-text" v-if="runSnapshot">
@@ -880,14 +1104,14 @@ function renderMarkdown(content: string): string {
         </div>
       </section>
 
-      <section class="step-bar" v-if="detailedStepEvents.length">
+      <section class="step-bar" v-if="runStepEvents.length">
         <strong class="step-bar-title">运行步骤</strong>
         <p class="task-text" v-if="monitorStepError">{{ monitorStepError }}</p>
-        <div class="step-scroller" ref="stepScroller" title="可上下滚动查看所有步骤">
+        <div class="step-scroller" ref="stepScroller" title="可上下滚动查看所有步骤" @scroll.passive="onStepScroll">
           <div class="step-track">
             <div
-              v-for="(ev, idx) in detailedStepEvents"
-              :key="`${ev.ts}-${ev.name}-${idx}`"
+              v-for="ev in runStepEvents"
+              :key="`${ev.ts}-${ev.agent}-${ev.phase}-${ev.name}-${ev.state}-${ev.messageZh}`"
               class="step-row"
             >
               <span class="task-text">{{ formatTime(ev.ts) }}</span>
@@ -897,11 +1121,16 @@ function renderMarkdown(content: string): string {
             </div>
           </div>
         </div>
+        <div class="composer-actions" v-if="!stepAutoFollow">
+          <div class="buttons">
+            <button type="button" class="send" @click="jumpStepsToBottom">回到底部</button>
+          </div>
+        </div>
       </section>
 
       <section class="agent-tip">
         <p>
-          {{ availableAgents.find((agent) => agent.value === selectedModel)?.description }}
+          {{ selectedAgentMeta?.description }}
         </p>
       </section>
 
@@ -910,8 +1139,16 @@ function renderMarkdown(content: string): string {
           <header>
             <strong>{{ msg.role === 'user' ? '你' : '助手' }}</strong>
             <span>{{ formatTime(msg.createdAt) }}</span>
-            <span :class="['chip tiny', msg.status ?? 'queued']">{{ formatTaskState(msg.status ?? 'queued') }}</span>
+            <span v-if="msg.role === 'user'" :class="['chip tiny', msg.status ?? 'queued']">{{ formatTaskState(msg.status ?? 'queued') }}</span>
           </header>
+          <section v-if="showInlineProgress(msg)" class="assistant-progress-card">
+            <div class="assistant-progress-head">执行进度</div>
+            <ul class="assistant-progress-list">
+              <li v-for="ev in semanticProgress" :key="`${ev.ts}-${ev.agent}-${ev.phase}-${ev.name}-${ev.state}-${ev.messageZh}`" class="assistant-progress-item">
+                <span class="assistant-progress-text">{{ ev.messageZh }}</span>
+              </li>
+            </ul>
+          </section>
           <div v-if="msg.content" class="content markdown" v-html="renderMarkdown(msg.content)"></div>
           <p v-else class="content">{{ msg.role === 'assistant' ? '...' : '' }}</p>
           <ul v-if="msg.attachments && msg.attachments.length" class="attachment-list">
@@ -922,8 +1159,8 @@ function renderMarkdown(content: string): string {
 
       <section class="upload-zone" @dragenter="preventDefaults" @dragover="preventDefaults" @drop="onDrop">
         <label for="upload-input">添加附件</label>
-        <input id="upload-input" type="file" multiple @change="onFileInput" />
-        <p>拖拽文件到这里（单个最大 20MB）。当前 MVP 仅发送文件元信息。</p>
+        <input id="upload-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx" multiple @change="onFileInput" />
+        <p>拖拽文件到这里（单个最大 20MB）。当前版本仅发送文件元信息。</p>
         <ul v-if="draftUploads.length" class="draft-files">
           <li v-for="file in draftUploads" :key="file.id">
             <span>{{ file.name }} ({{ file.size }} bytes)</span>
@@ -936,7 +1173,7 @@ function renderMarkdown(content: string): string {
         <textarea
           v-model="prompt"
           rows="4"
-          placeholder="请输入问题。Shift+Enter 换行。"
+          placeholder="请输入问题。按 Shift+Enter 换行。"
           @keydown.enter.exact.prevent="sendMessage"
         />
         <div class="composer-actions">

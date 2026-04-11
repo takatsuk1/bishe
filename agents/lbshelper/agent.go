@@ -239,7 +239,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 
 	switch req.NodeType {
 	case orchestrator.NodeTypeChatModel:
-		output, err = w.agent.callChatModel(ctx, taskID, query, req.NodeConfig)
+		output, err = w.agent.callChatModel(ctx, taskID, strings.TrimSpace(req.NodeID), query, req.NodeConfig, req.Payload)
 	case orchestrator.NodeTypeTool:
 		output, err = w.agent.callTool(ctx, taskID, query, req.NodeConfig, req.Payload)
 	default:
@@ -257,7 +257,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
-func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, nodeCfg map[string]any) (map[string]any, error) {
+func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string, query string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("query is empty")
@@ -285,9 +285,14 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	finalPrompt := query
 	switch intent {
 	case "extract_path_and_tool":
-		finalPrompt = buildExtractRoutePrompt(query, a.amapToolCatalog)
+		userQuery := extractLBSUserQuery(payload, query)
+		if userQuery == "" {
+			userQuery = query
+		}
+		finalPrompt = buildExtractRoutePrompt(userQuery, a.amapToolCatalog)
 	case "summarize_route":
-		finalPrompt = buildSummaryPrompt(query)
+		summaryInput := extractLBSSummaryInput(payload, query)
+		finalPrompt = buildSummaryPrompt(summaryInput)
 	}
 
 	logger.Infof("[TRACE] lbshelper.chatmodel start task=%s intent=%s model=%s url=%s api_key_set=%t query_len=%d", taskID, intent, model, baseURL, apiKey != "", len(finalPrompt))
@@ -295,7 +300,22 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 		return nil, fmt.Errorf("chat_model config missing url/model")
 	}
 
-	resp, err := llm.NewClient(baseURL, apiKey).ChatCompletion(ctx, model, []llm.Message{{Role: "user", Content: finalPrompt}}, nil, nil)
+	a.emitSemanticStep(ctx, taskID, "lbshelper.llm.start", internalproto.StepStateInfo, "正在调用大模型："+nodeID)
+	client := llm.NewClient(baseURL, apiKey)
+	var streamBuf strings.Builder
+	lastEmitAt := time.Time{}
+	resp, err := client.ChatCompletionStream(ctx, model, []llm.Message{{Role: "user", Content: finalPrompt}}, nil, nil, func(delta string) error {
+		if strings.TrimSpace(delta) == "" {
+			return nil
+		}
+		streamBuf.WriteString(delta)
+		if !lastEmitAt.IsZero() && time.Since(lastEmitAt) < 150*time.Millisecond {
+			return nil
+		}
+		lastEmitAt = time.Now()
+		a.emitSemanticStep(ctx, taskID, "lbshelper.llm.delta", internalproto.StepStateInfo, "正在调用大模型："+truncateText(streamBuf.String(), 140))
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +323,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	if resp == "" {
 		resp = "(empty LLM response)"
 	}
+	a.emitSemanticStep(ctx, taskID, "lbshelper.llm.end", internalproto.StepStateEnd, "完成：大模型处理")
 	logger.Infof("[TRACE] lbshelper.chatmodel done task=%s intent=%s resp_len=%d", taskID, intent, len(resp))
 	if intent == "extract_path_and_tool" {
 		toolCall := extractToolCall(resp)
@@ -340,18 +361,22 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 	}
 
 	toolCall := map[string]any{}
+	userQuery := extractLBSUserQuery(payload, query)
+	if userQuery == "" {
+		userQuery = strings.TrimSpace(query)
+	}
 	if extractOut, ok := payload["N_extract"].(map[string]any); ok {
 		if raw := strings.TrimSpace(fmt.Sprint(extractOut["response"])); raw != "" {
 			toolCall = extractToolCall(raw)
 		}
 	}
 	if len(toolCall) == 0 {
-		toolCall = extractToolCall(query)
+		toolCall = extractToolCall(userQuery)
 	}
 	if q, ok := toolCall["query"].(string); ok && strings.TrimSpace(q) != "" {
 		params["query"] = strings.TrimSpace(q)
 	} else {
-		params["query"] = strings.TrimSpace(query)
+		params["query"] = userQuery
 	}
 	if tn, ok := toolCall["tool_name"].(string); ok && strings.TrimSpace(tn) != "" {
 		params["tool_name"] = strings.TrimSpace(tn)
@@ -366,7 +391,7 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 	if _, ok := params["arguments"]; !ok {
 		params["arguments"] = map[string]any{}
 	}
-	params = normalizeAmapCallParams(params, query)
+	params = normalizeAmapCallParams(params, userQuery)
 	params["task_id"] = taskID
 
 	tool, err := a.findToolByName(toolName)
@@ -374,7 +399,7 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 		return nil, err
 	}
 
-	plan := buildAmapCallPlanFromModel(toolCall, params, query)
+	plan := buildAmapCallPlanFromModel(toolCall, params, userQuery)
 	a.emitInfoStep(ctx, taskID, "tool", "lbshelper.amap.plan", fmt.Sprintf("AMap 调用计划：共 %d 次", len(plan)))
 
 	callResults := make([]map[string]any, 0, len(plan))
@@ -841,6 +866,22 @@ func taskManagerFromContext(ctx context.Context) internaltm.Manager {
 	return m
 }
 
+func (a *Agent) emitSemanticStep(ctx context.Context, taskID string, name string, state internalproto.StepState, message string) {
+	manager := taskManagerFromContext(ctx)
+	if manager == nil {
+		return
+	}
+	ev := internalproto.NewStepEvent("lbshelper", "semantic", strings.TrimSpace(name), state, strings.TrimSpace(message))
+	token, err := internalproto.EncodeStepToken(ev)
+	if err != nil {
+		return
+	}
+	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
+		Role:  internalproto.MessageRoleAgent,
+		Parts: []internalproto.Part{internalproto.NewTextPart(token)},
+	})
+}
+
 func snapshotAnyForLog(v any, maxLen int) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -861,6 +902,14 @@ func snapshotAnyForLog(v any, maxLen int) string {
 		return "<empty>"
 	}
 	return s
+}
+
+func truncateText(input string, max int) string {
+	input = strings.TrimSpace(input)
+	if max <= 0 || len(input) <= max {
+		return input
+	}
+	return strings.TrimSpace(input[:max]) + "..."
 }
 
 func (a *Agent) startProgressReporter(ctx context.Context, taskID string, runID string, manager internaltm.Manager) func() {
@@ -1008,6 +1057,85 @@ func toTerminalStepState(state orchestrator.TaskState) (internalproto.StepState,
 	default:
 		return "", false
 	}
+}
+
+var lbsStepTokenRe = regexp.MustCompile(`\[\]\(step://[^\)]*\)`)
+
+func extractLBSUserQuery(payload map[string]any, fallback string) string {
+	for _, key := range []string{"input", "text", "query"} {
+		raw := strings.TrimSpace(fmt.Sprint(payload[key]))
+		if raw == "" || raw == "<nil>" {
+			continue
+		}
+		if q := extractLBSCurrentQuestion(raw); q != "" {
+			return q
+		}
+	}
+	if history, ok := payload["history_outputs"].([]any); ok {
+		for _, item := range history {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(fmt.Sprint(m["node_id"])) != "__input__" {
+				continue
+			}
+			out, ok := m["output"].(map[string]any)
+			if !ok {
+				continue
+			}
+			raw := strings.TrimSpace(fmt.Sprint(out["query"]))
+			if raw == "" || raw == "<nil>" {
+				continue
+			}
+			if q := extractLBSCurrentQuestion(raw); q != "" {
+				return q
+			}
+		}
+	}
+	return extractLBSCurrentQuestion(strings.TrimSpace(fallback))
+}
+
+func extractLBSCurrentQuestion(in string) string {
+	s := strings.TrimSpace(lbsStepTokenRe.ReplaceAllString(in, " "))
+	if s == "" {
+		return ""
+	}
+	if i := strings.LastIndex(s, "=== 当前问题 ==="); i >= 0 {
+		q := strings.TrimSpace(s[i+len("=== 当前问题 ==="):])
+		if q != "" {
+			return q
+		}
+	}
+	if i := strings.LastIndex(s, "用户:"); i >= 0 {
+		q := strings.TrimSpace(s[i+len("用户:"):])
+		if q != "" {
+			return q
+		}
+	}
+	if strings.Contains(s, "map[") {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func extractLBSSummaryInput(payload map[string]any, fallback string) string {
+	if amapOut, ok := payload["N_amap"].(map[string]any); ok {
+		if raw := strings.TrimSpace(fmt.Sprint(amapOut["response"])); raw != "" && raw != "<nil>" {
+			return raw
+		}
+		if result, ok := amapOut["result"].(map[string]any); ok && len(result) > 0 {
+			if b, err := json.Marshal(result); err == nil {
+				return strings.TrimSpace(string(b))
+			}
+		}
+	}
+	if latest, ok := payload["latest_output"].(map[string]any); ok {
+		if raw := strings.TrimSpace(fmt.Sprint(latest["response"])); raw != "" && raw != "<nil>" {
+			return raw
+		}
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func extractToolCall(raw string) map[string]any {

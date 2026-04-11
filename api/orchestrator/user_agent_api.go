@@ -583,13 +583,18 @@ func (api *UserAgentAPI) handlePublishUserAgent(w http.ResponseWriter, r *http.R
 		}
 
 		for _, t := range mergedByName {
+			skipToolFileGeneration := strings.EqualFold(strings.TrimSpace(t.UserID), "system")
+			if !skipToolFileGeneration && api.generator != nil && api.generator.ToolFileExists(t.ToolID) {
+				skipToolFileGeneration = true
+			}
 			toolDefs = append(toolDefs, codegen.ToolDefinition{
-				ToolID:      t.ToolID,
-				Name:        t.Name,
-				Description: t.Description,
-				ToolType:    tools.ToolType(t.ToolType),
-				Config:      t.Config,
-				Parameters:  ConvertToToolsParameter(t.Parameters),
+				ToolID:             t.ToolID,
+				Name:               t.Name,
+				Description:        t.Description,
+				ToolType:           tools.ToolType(t.ToolType),
+				Config:             t.Config,
+				Parameters:         ConvertToToolsParameter(t.Parameters),
+				SkipFileGeneration: skipToolFileGeneration,
 			})
 		}
 	}

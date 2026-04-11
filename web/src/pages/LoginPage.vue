@@ -44,7 +44,7 @@ async function handleSubmit(): Promise<void> {
   <main class="auth-page">
     <section class="auth-card">
       <h1>登录</h1>
-      <p class="auth-hint">登录后可访问你的工作流、工具和 Agent。</p>
+      <p class="auth-hint">登录后可访问你的工作流、工具和助手。</p>
 
       <form class="auth-form" @submit.prevent="handleSubmit">
         <label>

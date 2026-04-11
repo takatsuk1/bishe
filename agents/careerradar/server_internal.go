@@ -1,4 +1,4 @@
-package memoreminder
+package careerradar
 
 import (
 	"context"
@@ -14,8 +14,7 @@ type internalProcessor struct {
 	agent *Agent
 }
 
-func (p *internalProcessor) ProcessMessage(ctx context.Context, message protocol.Message,
-	manager taskmanager.Manager) (string, <-chan protocol.StreamEvent, error) {
+func (p *internalProcessor) ProcessMessage(ctx context.Context, message protocol.Message, manager taskmanager.Manager) (string, <-chan protocol.StreamEvent, error) {
 	taskID, err := manager.BuildTask(message.TaskID, nil)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to build task: %w", err)
@@ -38,8 +37,8 @@ func (p *internalProcessor) ProcessMessage(ctx context.Context, message protocol
 
 func NewHTTPServer(agent *Agent) (http.Handler, error) {
 	card := protocol.AgentCard{
-		Name:        "memo_reminder",
-		Description: "备忘录提醒助手，结构化记录提醒并在指定时间前10分钟弹窗提醒",
+		Name:        "careerradar",
+		Description: "职场雷达助手：调用 deepresearch 获取岗位情报，输出匹配岗位与高风险 JD 识别",
 		Version:     "0.0.1",
 		Provider:    &protocol.AgentProvider{Organization: "a2a_samples"},
 		Capabilities: protocol.AgentCapabilities{
@@ -49,10 +48,10 @@ func NewHTTPServer(agent *Agent) (http.Handler, error) {
 		DefaultInputModes:  []string{"text"},
 		DefaultOutputModes: []string{"text"},
 		Skills: []protocol.AgentSkill{{
-			ID:          "memo_remind",
-			Name:        "备忘录提醒",
-			Description: stringPtr("记录备忘提醒并定时触发弹窗提醒"),
-			Tags:        []string{"reminder", "memo", "notification"},
+			ID:          "career_radar",
+			Name:        "职场雷达",
+			Description: stringPtr("根据岗位意向检索市场信息，推荐匹配岗位并识别高风险岗位描述"),
+			Tags:        []string{"job", "career", "risk"},
 			InputModes:  []string{"text"},
 			OutputModes: []string{"text"},
 		}},

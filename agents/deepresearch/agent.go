@@ -204,14 +204,34 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 		}
 		return fmt.Errorf("deepresearch workflow failed")
 	}
-	out := agentfmt.Clean(a.buildStructuredResponse(ctx, taskID, query, runResult.FinalOutput))
+	out := ""
+	streamedFinal := false
+	if manager != nil {
+		if streamed, err := a.streamStructuredResponseWithLLM(ctx, taskID, query, runResult.FinalOutput, manager); err == nil && strings.TrimSpace(streamed) != "" {
+			out = streamed
+			streamedFinal = true
+		} else {
+			if err != nil {
+				logger.Warnf("[TRACE] deepresearch.stream_final failed task=%s err=%v", taskID, err)
+			}
+			out = a.buildStructuredResponse(ctx, taskID, query, runResult.FinalOutput)
+		}
+	} else {
+		out = a.buildStructuredResponse(ctx, taskID, query, runResult.FinalOutput)
+	}
+	out = agentfmt.Clean(out)
 	if out == "" {
 		out = "Workflow executed successfully"
 	}
 	if manager != nil {
+		finalText := out
+		if streamedFinal {
+			// Final content was already streamed via working updates; avoid duplicate append.
+			finalText = ""
+		}
 		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateCompleted, &internalproto.Message{
 			Role:  internalproto.MessageRoleAgent,
-			Parts: []internalproto.Part{internalproto.NewTextPart(out)},
+			Parts: []internalproto.Part{internalproto.NewTextPart(finalText)},
 		})
 	}
 	return nil
@@ -236,7 +256,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 		case "N_extract_keywords":
 			queryForNode = buildKeywordExtractionQuery(req.Payload)
 		}
-		output, err = w.agent.callChatModel(ctx, taskID, queryForNode, req.NodeConfig, req.Payload)
+		output, err = w.agent.callChatModel(ctx, taskID, strings.TrimSpace(req.NodeID), queryForNode, req.NodeConfig, req.Payload)
 	case orchestrator.NodeTypeTool:
 		output, err = w.agent.callTool(ctx, taskID, query, req.NodeConfig, req.Payload)
 	default:
@@ -254,14 +274,16 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
-func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
+func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string, query string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("query is empty")
 	}
 
+	normalizeBool := false
 	if nodeCfg != nil {
 		if v, ok := nodeCfg["normalize_bool"].(bool); ok && v {
+			normalizeBool = true
 			if !hasSearchEvidence(payload) {
 				logger.Infof("[TRACE] deepresearch.judge task=%s no_search_evidence force=false", taskID)
 				return map[string]any{"response": "false"}, nil
@@ -287,8 +309,41 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	if baseURL == "" || model == "" {
 		return nil, fmt.Errorf("chat_model config missing url/model")
 	}
+	nodeID = strings.TrimSpace(nodeID)
 
-	resp, err := llm.NewClient(baseURL, apiKey).ChatCompletion(ctx, model, []llm.Message{{Role: "user", Content: query}}, nil, nil)
+	client := llm.NewClient(baseURL, apiKey)
+	var (
+		resp string
+		err  error
+	)
+	if normalizeBool {
+		resp, err = client.ChatCompletion(ctx, model, []llm.Message{{Role: "user", Content: query}}, nil, nil)
+	} else {
+		streamingKeyword := nodeID == "N_extract_keywords"
+		var keywordPreview strings.Builder
+		lastKeywordEmit := time.Time{}
+		if streamingKeyword {
+			a.emitSemanticStep(ctx, taskID, "deepresearch.keyword.extract.start", internalproto.StepStateInfo, "正在调用大模型提取关键词：")
+		}
+		resp, err = client.ChatCompletionStream(ctx, model, []llm.Message{{Role: "user", Content: query}}, nil, nil, func(delta string) error {
+			if !streamingKeyword || strings.TrimSpace(delta) == "" {
+				return nil
+			}
+			keywordPreview.WriteString(delta)
+			if !lastKeywordEmit.IsZero() && time.Since(lastKeywordEmit) < 120*time.Millisecond {
+				return nil
+			}
+			lastKeywordEmit = time.Now()
+			a.emitSemanticStep(ctx, taskID, "deepresearch.keyword.extract.delta", internalproto.StepStateInfo, "正在调用大模型提取关键词："+truncateText(keywordPreview.String(), 160))
+			return nil
+		})
+		if streamingKeyword {
+			if strings.TrimSpace(resp) != "" {
+				a.emitSemanticStep(ctx, taskID, "deepresearch.keyword.extract.delta", internalproto.StepStateInfo, "正在调用大模型提取关键词："+truncateText(resp, 160))
+			}
+			a.emitSemanticStep(ctx, taskID, "deepresearch.keyword.extract.end", internalproto.StepStateEnd, "完成：关键词提取")
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -296,10 +351,8 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	if resp == "" {
 		resp = "(empty LLM response)"
 	}
-	if nodeCfg != nil {
-		if v, ok := nodeCfg["normalize_bool"].(bool); ok && v {
-			resp = normalizeBoolResponse(resp)
-		}
+	if normalizeBool {
+		resp = normalizeBoolResponse(resp)
 	}
 	logger.Infof("[TRACE] deepresearch.chatmodel done task=%s resp_len=%d", taskID, len(resp))
 
@@ -357,7 +410,7 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 		} else {
 			logger.Infof("[TRACE] deepresearch.search task=%s keyword=%q", taskID, q)
 		}
-		a.emitSearchKeywordStep(ctx, taskID, round, q)
+		a.emitSemanticStep(ctx, taskID, "deepresearch.search.start", internalproto.StepStateInfo, "正在搜索内容：关键词："+q)
 		logger.Infof("[TRACE] deepresearch.tavily request task=%s query_len=%d query=%q", taskID, len(q), q)
 	}
 
@@ -370,6 +423,9 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 		return nil, err
 	}
 	resp := summarizeToolResponse(out)
+	if strings.EqualFold(toolName, "tavily") {
+		a.emitSemanticStep(ctx, taskID, "deepresearch.search.end", internalproto.StepStateEnd, "搜索完成："+summarizeSearchPreview(out))
+	}
 	return map[string]any{"response": resp, "result": out}, nil
 }
 
@@ -488,6 +544,22 @@ func (a *Agent) emitStepEvent(ctx context.Context, manager internaltm.Manager, t
 	})
 }
 
+func (a *Agent) emitSemanticStep(ctx context.Context, taskID string, name string, state internalproto.StepState, message string) {
+	manager := taskManagerFromContext(ctx)
+	if manager == nil {
+		return
+	}
+	ev := internalproto.NewStepEvent("deepresearch", "semantic", strings.TrimSpace(name), state, strings.TrimSpace(message))
+	token, err := internalproto.EncodeStepToken(ev)
+	if err != nil {
+		return
+	}
+	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
+		Role:  internalproto.MessageRoleAgent,
+		Parts: []internalproto.Part{internalproto.NewTextPart(token)},
+	})
+}
+
 func (a *Agent) emitSearchKeywordStep(ctx context.Context, taskID string, round int, keyword string) {
 	manager := taskManagerFromContext(ctx)
 	if manager == nil {
@@ -504,6 +576,31 @@ func (a *Agent) emitSearchKeywordStep(ctx context.Context, taskID string, round 
 	ev := internalproto.NewStepEvent("deepresearch", "search", "deepresearch.search.keyword", internalproto.StepStateInfo, message)
 	ev.Round = round
 	ev.Keyword = keyword
+	token, err := internalproto.EncodeStepToken(ev)
+	if err != nil {
+		return
+	}
+	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
+		Role:  internalproto.MessageRoleAgent,
+		Parts: []internalproto.Part{internalproto.NewTextPart(token)},
+	})
+}
+
+func (a *Agent) emitLLMStreamingProgress(ctx context.Context, taskID string, chars int) {
+	manager := taskManagerFromContext(ctx)
+	if manager == nil {
+		return
+	}
+	if chars <= 0 {
+		return
+	}
+	ev := internalproto.NewStepEvent(
+		"deepresearch",
+		"llm",
+		"deepresearch.llm.streaming",
+		internalproto.StepStateInfo,
+		fmt.Sprintf("大模型生成中，已接收约 %d 字符...", chars),
+	)
 	token, err := internalproto.EncodeStepToken(ev)
 	if err != nil {
 		return
@@ -687,6 +784,70 @@ func (a *Agent) summarizeSourcesWithLLM(ctx context.Context, taskID string, quer
 	return parsed.Summary, outPoints, outDetails
 }
 
+func (a *Agent) streamStructuredResponseWithLLM(ctx context.Context, taskID string, query string, finalOutput map[string]any, manager internaltm.Manager) (string, error) {
+	if manager == nil {
+		return "", fmt.Errorf("task manager unavailable")
+	}
+	sources := collectResearchSources(finalOutput)
+	if len(sources) == 0 {
+		return "", fmt.Errorf("no sources for streaming summary")
+	}
+	if a == nil || a.llmClient == nil {
+		return "", fmt.Errorf("llm client unavailable")
+	}
+	baseURL := strings.TrimSpace(a.llmClient.BaseURL)
+	apiKey := strings.TrimSpace(a.llmClient.APIKey)
+	model := strings.TrimSpace(a.chatModel)
+	if baseURL == "" || model == "" {
+		return "", fmt.Errorf("chat_model config missing url/model")
+	}
+
+	maxSources := len(sources)
+	if maxSources > 12 {
+		maxSources = 12
+	}
+	var refs strings.Builder
+	for i := 0; i < maxSources; i++ {
+		s := sources[i]
+		refs.WriteString(fmt.Sprintf("[%d] 标题: %s\n", i+1, strings.TrimSpace(s.Title)))
+		if strings.TrimSpace(s.URL) != "" {
+			refs.WriteString(fmt.Sprintf("URL: %s\n", strings.TrimSpace(s.URL)))
+		}
+		refs.WriteString(fmt.Sprintf("摘录: %s\n\n", truncateText(strings.TrimSpace(s.Content), 420)))
+	}
+
+	system := "你是严谨的研究助理。请直接输出 Markdown，不要输出 JSON。"
+	user := "请根据提供资料，输出结构化中文结论，必须使用以下标题：\n" +
+		"### 研究结论\n### 关键要点\n### 详细信息\n### 参考来源\n### 检索信息整理\n" +
+		"要求：\n" +
+		"1) 内容与资料一致，不编造。\n" +
+		"2) 关键要点使用编号列表。\n" +
+		"3) 参考来源按 [1][2]... 给出标题和链接。\n\n" +
+		fmt.Sprintf("用户问题：\n%s\n\n资料：\n%s", strings.TrimSpace(query), refs.String())
+
+	logger.Infof("[TRACE] deepresearch.summary_llm.stream start task=%s model=%s source_count=%d", taskID, model, len(sources))
+	a.emitSemanticStep(ctx, taskID, "deepresearch.final.organize.start", internalproto.StepStateInfo, "正在调用大模型整理结果：")
+	var out strings.Builder
+	client := llm.NewClient(baseURL, apiKey)
+	_, err := client.ChatCompletionStream(ctx, model, []llm.Message{
+		{Role: "system", Content: system},
+		{Role: "user", Content: user},
+	}, nil, nil, func(delta string) error {
+		if delta == "" {
+			return nil
+		}
+		out.WriteString(delta)
+		return manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
+			Role:  internalproto.MessageRoleAgent,
+			Parts: []internalproto.Part{internalproto.NewTextPart(delta)},
+		})
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out.String()), nil
+}
+
 func collectResearchSources(finalOutput map[string]any) []researchSource {
 	out := make([]researchSource, 0, 8)
 	seen := map[string]bool{}
@@ -755,6 +916,27 @@ func summarizeToolResponse(out map[string]any) string {
 		}
 	}
 	return "工具调用已完成。"
+}
+
+func summarizeSearchPreview(out map[string]any) string {
+	sources := collectResearchSources(map[string]any{"result": out})
+	if len(sources) == 0 {
+		return "未获取到有效结果"
+	}
+	head := sources[0]
+	if t := strings.TrimSpace(head.Title); t != "" {
+		if c := strings.TrimSpace(head.Content); c != "" {
+			return truncateText(t+"："+c, 140)
+		}
+		return truncateText(t, 140)
+	}
+	if c := strings.TrimSpace(head.Content); c != "" {
+		return truncateText(c, 140)
+	}
+	if u := strings.TrimSpace(head.URL); u != "" {
+		return truncateText(u, 140)
+	}
+	return "已返回候选资料"
 }
 
 func sanitizeRawResponse(raw string) string {
@@ -1199,10 +1381,10 @@ func buildDeepResearchWorkflow() (*orchestrator.Workflow, error) {
 		ID:   "N_loop",
 		Type: orchestrator.NodeTypeLoop,
 		Config: map[string]any{
-			"max_iterations": 5,
+			"max_iterations": 2,
 		},
 		LoopConfig: &orchestrator.LoopConfig{
-			MaxIterations: 5,
+			MaxIterations: 2,
 			ContinueTo:    "N_judge",
 			ExitTo:        "N_end",
 		},

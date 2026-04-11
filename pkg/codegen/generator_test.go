@@ -3,6 +3,8 @@ package codegen
 import (
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -160,5 +162,99 @@ func TestGenerateWorkflowBuilder_DerivesConditionRoutesFromEdgeLabels(t *testing
 	code := g.generateWorkflowBuilder(req)
 	if !strings.Contains(code, "Metadata: map[string]string{\"false_to\": \"extract\", \"true_to\": \"final\"}") {
 		t.Fatalf("generated workflow should include explicit condition routes, got: %s", code)
+	}
+}
+
+func TestGenerateAgent_DoesNotRewriteExistingToolFile(t *testing.T) {
+	tmp := t.TempDir()
+	g := NewCodeGenerator(GeneratorConfig{OutputDir: tmp})
+
+	req := &AgentGenerateRequest{
+		AgentID: "demo_agent",
+		Name:    "Demo",
+		WorkflowDef: &executor.WorkflowDefinition{
+			WorkflowID:  "wf_1",
+			Name:        "wf",
+			StartNodeID: "start",
+			Nodes: []executor.NodeDef{
+				{ID: "start", Type: "start"},
+				{ID: "end", Type: "end"},
+			},
+			Edges: []executor.EdgeDef{{From: "start", To: "end"}},
+		},
+		Tools: []ToolDefinition{{
+			ToolID:      "my-tool",
+			Name:        "my-tool",
+			Description: "demo",
+			ToolType:    tools.ToolTypeHTTP,
+			Config: map[string]any{
+				"method": "GET",
+				"url":    "https://example.com",
+			},
+		}},
+	}
+
+	if _, err := g.GenerateAgent(req); err != nil {
+		t.Fatalf("first generate should succeed: %v", err)
+	}
+
+	toolFile := g.ToolFilePath("my-tool")
+	const sentinel = "// sentinel: do-not-overwrite\n"
+	if err := os.WriteFile(toolFile, []byte(sentinel), 0644); err != nil {
+		t.Fatalf("write sentinel file failed: %v", err)
+	}
+
+	if _, err := g.GenerateAgent(req); err != nil {
+		t.Fatalf("second generate should succeed: %v", err)
+	}
+
+	b, err := os.ReadFile(toolFile)
+	if err != nil {
+		t.Fatalf("read tool file failed: %v", err)
+	}
+	if string(b) != sentinel {
+		t.Fatalf("existing tool file should not be rewritten, got: %s", string(b))
+	}
+}
+
+func TestGenerateAgent_RespectsSkipFileGeneration(t *testing.T) {
+	tmp := t.TempDir()
+	g := NewCodeGenerator(GeneratorConfig{OutputDir: tmp})
+
+	req := &AgentGenerateRequest{
+		AgentID: "demo_agent_skip",
+		Name:    "Demo",
+		WorkflowDef: &executor.WorkflowDefinition{
+			WorkflowID:  "wf_1",
+			Name:        "wf",
+			StartNodeID: "start",
+			Nodes: []executor.NodeDef{
+				{ID: "start", Type: "start"},
+				{ID: "end", Type: "end"},
+			},
+			Edges: []executor.EdgeDef{{From: "start", To: "end"}},
+		},
+		Tools: []ToolDefinition{{
+			ToolID:             "system-tool",
+			Name:               "system-tool",
+			Description:        "demo",
+			ToolType:           tools.ToolTypeHTTP,
+			SkipFileGeneration: true,
+			Config: map[string]any{
+				"method": "GET",
+				"url":    "https://example.com",
+			},
+		}},
+	}
+
+	if _, err := g.GenerateAgent(req); err != nil {
+		t.Fatalf("generate should succeed: %v", err)
+	}
+
+	toolFile := filepath.Join(tmp, "pkg", "tools", "user_generated_system_tool.go")
+	if _, err := os.Stat(toolFile); err == nil {
+		t.Fatalf("tool file should not be generated when SkipFileGeneration=true")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("unexpected stat error: %v", err)
 	}
 }

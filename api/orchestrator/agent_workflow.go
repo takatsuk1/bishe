@@ -453,13 +453,15 @@ func InitAgentWorkflows() error {
 		description string
 		buildFunc   func() storage.WorkflowDefinition
 	}{
-		{"host", "Host Agent", "主控 Agent，负责路由决策和调用下游 Agent", buildHostWorkflowDef},
-		{"deepresearch", "Deep Research Agent", "深度研究 Agent，使用 Tavily 进行深度检索并整理答案", buildDeepResearchWorkflowDef},
-		{"urlreader", "URL Reader Agent", "URL 读取 Agent，使用本地 Fetch MCP 读取网页内容并生成回答", buildURLReaderWorkflowDef},
-		{"lbshelper", "LBS Helper Agent", "位置服务 Agent，仅使用 AMap 规划行程", buildLBSHelperWorkflowDef},
-		{"schedulehelper", "Schedule Helper Agent", "日程规划 Agent，输出任务优先级和时间安排建议", buildScheduleHelperWorkflowDef},
-		{"financehelper", "Finance Helper Agent", "财务助理 Agent，支持记账、财务报告、财经资讯整理与理财建议", buildFinanceHelperWorkflowDef},
-		{"memoreminder", "备忘录提醒 Agent", "结构化记录并定时弹窗提醒的备忘录 Agent", buildMemoReminderWorkflowDef},
+		{"host", "主控编排助手", "主控助手，负责路由决策和调用下游助手", buildHostWorkflowDef},
+		{"deepresearch", "深度检索助手", "深度检索助手，使用 Tavily 进行深度检索并整理答案", buildDeepResearchWorkflowDef},
+		{"urlreader", "网页阅读助手", "网页阅读助手，使用本地 Fetch MCP 读取网页内容并生成回答", buildURLReaderWorkflowDef},
+		{"lbshelper", "出行助手", "出行助手，仅使用 AMap 规划行程", buildLBSHelperWorkflowDef},
+		{"schedulehelper", "日程规划助手", "日程规划助手，输出任务优先级和时间安排建议", buildScheduleHelperWorkflowDef},
+		{"financehelper", "财务助手", "财务助手，支持记账、财务报告、财经资讯整理与理财建议", buildFinanceHelperWorkflowDef},
+		{"resumecustomizer", "简历优化助手", "简历优化助手，结合目标岗位与上传简历生成定制版简历", buildResumeCustomizerWorkflowDef},
+		{"interviewsimulator", "面试模拟助手", "面试模拟助手，基于上传简历生成结构化模拟面试内容", buildInterviewSimulatorWorkflowDef},
+		{"careerradar", "职场雷达助手", "职场雷达助手，调用 deepresearch 推荐匹配岗位并识别高风险岗位描述", buildCareerRadarWorkflowDef},
 	}
 
 	for _, aw := range agentWorkflows {
@@ -483,7 +485,7 @@ func InitAgentWorkflows() error {
 func buildHostAgentWorkflow() AgentWorkflowDetail {
 	return AgentWorkflowDetail{
 		ID:          "host",
-		Name:        "Host Agent",
+		Name:        "主控编排助手",
 		Type:        "orchestrator",
 		Description: "主控 Agent，负责路由决策和调用下游 Agent",
 		Version:     "1.0.0",
@@ -531,6 +533,9 @@ func buildHostAgentWorkflow() AgentWorkflowDetail {
 			{AgentID: "deepresearch", Type: "downstream", Required: false, Description: "深度研究 Agent"},
 			{AgentID: "urlreader", Type: "downstream", Required: false, Description: "URL 读取 Agent"},
 			{AgentID: "lbshelper", Type: "downstream", Required: false, Description: "位置服务 Agent"},
+			{AgentID: "resumecustomizer", Type: "downstream", Required: false, Description: "简历定制 Agent"},
+			{AgentID: "interviewsimulator", Type: "downstream", Required: false, Description: "面试模拟 Agent"},
+			{AgentID: "careerradar", Type: "downstream", Required: false, Description: "职场雷达 Agent"},
 		},
 		ExecutionOrder: ExecutionOrder{
 			StartNodeID: "start",
@@ -542,7 +547,7 @@ func buildHostAgentWorkflow() AgentWorkflowDetail {
 			{ID: "agent_info", Type: "tool", Config: map[string]interface{}{"tool_name": "agent_info"}, Metadata: map[string]string{"ui.label": "获取可调用 Agent", "ui.x": "300", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "chat_model", Type: "chat_model", PreInput: "你是路由决策器。可调用 agent 列表如下：\n{{agent_info.response}}\n若无需调用下游 agent，只输出 false；若需要调用，只输出 agent 名称本身。用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "路由决策", "ui.x": "520", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "condition", Type: "condition", Config: map[string]interface{}{"left_type": "path", "left_value": "chat_model.response", "operator": "eq", "right_type": "const", "right_value": "false"}, Metadata: map[string]string{"ui.label": "是否直接回答", "ui.x": "700", "ui.y": "120", "ui.agent": "host"}},
-			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "wellnesscoach"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
+			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "resumecustomizer", "interviewsimulator", "careerradar"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
 			{ID: "direct_answer", Type: "chat_model", PreInput: "请基于可调用 agent 列表直接回答用户问题。可调用 agent 列表：\n{{agent_info.response}}\n用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "直接回答", "ui.x": "760", "ui.y": "180", "ui.agent": "host"}},
 			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "980", "ui.y": "120"}},
 		},
@@ -568,7 +573,7 @@ func buildHostAgentWorkflow() AgentWorkflowDetail {
 func buildDeepResearchAgentWorkflow() AgentWorkflowDetail {
 	return AgentWorkflowDetail{
 		ID:          "deepresearch",
-		Name:        "Deep Research Agent",
+		Name:        "深度检索助手",
 		Type:        "worker",
 		Description: "深度研究 Agent，使用 Tavily 进行深度检索并整理答案",
 		Version:     "1.0.0",
@@ -618,7 +623,7 @@ func buildDeepResearchAgentWorkflow() AgentWorkflowDetail {
 		},
 		Nodes: []NodeDefinition{
 			{ID: "start", Type: "start", Metadata: map[string]string{"ui.label": "开始", "ui.x": "120", "ui.y": "120"}},
-			{ID: "loop", Type: "loop", Config: map[string]interface{}{"max_iterations": 5}, LoopConfig: &LoopConfig{MaxIterations: 5, ContinueTo: "judge_satisfied", ExitTo: "end"}, Metadata: map[string]string{"ui.label": "循环控制", "ui.x": "300", "ui.y": "120", "ui.agent": "deepresearch"}},
+			{ID: "loop", Type: "loop", Config: map[string]interface{}{"max_iterations": 2}, LoopConfig: &LoopConfig{MaxIterations: 2, ContinueTo: "judge_satisfied", ExitTo: "end"}, Metadata: map[string]string{"ui.label": "循环控制", "ui.x": "300", "ui.y": "120", "ui.agent": "deepresearch"}},
 			{ID: "judge_satisfied", Type: "chat_model", PreInput: "根据当前检索结果判断是否已经足够回答用户问题。仅输出 true 或 false。问题: {{query}}；当前结果: {{tavily_search.response}}", Config: map[string]interface{}{"output_type": "bool"}, Metadata: map[string]string{"ui.label": "是否满足", "ui.x": "500", "ui.y": "60", "ui.agent": "deepresearch"}},
 			{ID: "condition", Type: "condition", Config: map[string]interface{}{"left_type": "path", "left_value": "judge_satisfied.response", "operator": "eq", "right_type": "bool", "right_value": true}, Metadata: map[string]string{"ui.label": "满足判断", "ui.x": "680", "ui.y": "60", "ui.agent": "deepresearch"}},
 			{ID: "extract_query", Type: "chat_model", PreInput: "请基于用户问题与当前检索结果，提取一个新的检索关键词。只输出关键词。问题: {{query}}；当前结果: {{tavily_search.response}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "提取新关键词", "ui.x": "860", "ui.y": "150", "ui.agent": "deepresearch"}},
@@ -648,7 +653,7 @@ func buildDeepResearchAgentWorkflow() AgentWorkflowDetail {
 func buildURLReaderAgentWorkflow() AgentWorkflowDetail {
 	return AgentWorkflowDetail{
 		ID:          "urlreader",
-		Name:        "URL Reader Agent",
+		Name:        "网页阅读助手",
 		Type:        "worker",
 		Description: "URL 读取 Agent，使用本地 Fetch MCP 读取网页内容并生成回答",
 		Version:     "1.0.0",
@@ -717,7 +722,7 @@ func buildURLReaderAgentWorkflow() AgentWorkflowDetail {
 func buildLBSHelperAgentWorkflow() AgentWorkflowDetail {
 	return AgentWorkflowDetail{
 		ID:          "lbshelper",
-		Name:        "LBS Helper Agent",
+		Name:        "出行助手",
 		Type:        "worker",
 		Description: "位置服务 Agent，仅使用 AMap 规划行程",
 		Version:     "1.0.0",
@@ -793,7 +798,7 @@ func buildHostWorkflowDef() storage.WorkflowDefinition {
 			{ID: "agent_info", Type: "tool", Config: map[string]interface{}{"tool_name": "agent_info"}, Metadata: map[string]string{"ui.label": "获取可调用 Agent", "ui.x": "300", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "chat_model", Type: "chat_model", PreInput: "你是路由决策器。可调用 agent 列表如下：\n{{agent_info.response}}\n若无需调用下游 agent，只输出 false；若需要调用，只输出 agent 名称本身。用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "路由决策", "ui.x": "520", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "condition", Type: "condition", Config: map[string]interface{}{"left_type": "path", "left_value": "chat_model.response", "operator": "eq", "right_type": "const", "right_value": "false"}, Metadata: map[string]string{"ui.label": "是否直接回答", "ui.x": "700", "ui.y": "120", "ui.agent": "host"}},
-			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "wellnesscoach"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
+			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "resumecustomizer", "interviewsimulator", "careerradar"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
 			{ID: "direct_answer", Type: "chat_model", PreInput: "请基于可调用 agent 列表直接回答用户问题。可调用 agent 列表：\n{{agent_info.response}}\n用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "直接回答", "ui.x": "760", "ui.y": "180", "ui.agent": "host"}},
 			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "980", "ui.y": "120"}},
 		},
@@ -814,7 +819,7 @@ func buildDeepResearchWorkflowDef() storage.WorkflowDefinition {
 		StartNodeID: "start",
 		Nodes: []storage.NodeDef{
 			{ID: "start", Type: "start", Metadata: map[string]string{"ui.label": "开始", "ui.x": "120", "ui.y": "120"}},
-			{ID: "loop", Type: "loop", Config: map[string]interface{}{"max_iterations": 5}, LoopConfig: map[string]interface{}{"max_iterations": 5, "continue_to": "judge_satisfied", "exit_to": "end"}, Metadata: map[string]string{"ui.label": "循环控制", "ui.x": "300", "ui.y": "120", "ui.agent": "deepresearch"}},
+			{ID: "loop", Type: "loop", Config: map[string]interface{}{"max_iterations": 2}, LoopConfig: map[string]interface{}{"max_iterations": 2, "continue_to": "judge_satisfied", "exit_to": "end"}, Metadata: map[string]string{"ui.label": "循环控制", "ui.x": "300", "ui.y": "120", "ui.agent": "deepresearch"}},
 			{ID: "judge_satisfied", Type: "chat_model", PreInput: "根据当前检索结果判断是否已经足够回答用户问题。仅输出 true 或 false。问题: {{query}}；当前结果: {{tavily_search.response}}", Config: map[string]interface{}{"output_type": "bool"}, Metadata: map[string]string{"ui.label": "是否满足", "ui.x": "500", "ui.y": "60", "ui.agent": "deepresearch"}},
 			{ID: "condition", Type: "condition", Config: map[string]interface{}{"left_type": "path", "left_value": "judge_satisfied.response", "operator": "eq", "right_type": "bool", "right_value": true}, Metadata: map[string]string{"ui.label": "满足判断", "ui.x": "680", "ui.y": "60", "ui.agent": "deepresearch"}},
 			{ID: "extract_query", Type: "chat_model", PreInput: "请基于用户问题与当前检索结果，提取一个新的检索关键词。只输出关键词。问题: {{query}}；当前结果: {{tavily_search.response}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "提取新关键词", "ui.x": "860", "ui.y": "150", "ui.agent": "deepresearch"}},
@@ -921,6 +926,65 @@ func buildFinanceHelperWorkflowDef() storage.WorkflowDefinition {
 			{From: "N_mysql_advice", To: "N_akshare_advice"},
 			{From: "N_akshare_advice", To: "N_respond"},
 			{From: "N_respond", To: "N_end"},
+		},
+	}
+}
+
+func buildResumeCustomizerWorkflowDef() storage.WorkflowDefinition {
+	return storage.WorkflowDefinition{
+		StartNodeID: "start",
+		Nodes: []storage.NodeDef{
+			{ID: "start", Type: "start", Metadata: map[string]string{"ui.label": "开始", "ui.x": "120", "ui.y": "120"}},
+			{ID: "analyze", Type: "chat_model", PreInput: "你是简历诊断助手。请根据用户输入中的原始简历与目标岗位信息，输出结构化诊断：关键词覆盖、优势亮点、缺失项与改写建议。", Config: map[string]interface{}{"intent": "analyze_resume"}, Metadata: map[string]string{"ui.label": "简历诊断", "ui.x": "360", "ui.y": "120", "ui.agent": "resumecustomizer"}},
+			{ID: "tailor", Type: "chat_model", PreInput: "你是简历定制助手。请基于诊断结果生成可直接使用的中文简历草稿，包含：个人摘要、核心技能、项目经历（STAR）、工作经历（量化成果）、教育背景。", Config: map[string]interface{}{"intent": "tailor_resume"}, Metadata: map[string]string{"ui.label": "生成定制简历", "ui.x": "620", "ui.y": "120", "ui.agent": "resumecustomizer"}},
+			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "860", "ui.y": "120"}},
+		},
+		Edges: []storage.EdgeDef{
+			{From: "start", To: "analyze"},
+			{From: "analyze", To: "tailor"},
+			{From: "tailor", To: "end"},
+		},
+	}
+}
+
+func buildInterviewSimulatorWorkflowDef() storage.WorkflowDefinition {
+	return storage.WorkflowDefinition{
+		StartNodeID: "start",
+		Nodes: []storage.NodeDef{
+			{ID: "start", Type: "start", Metadata: map[string]string{"ui.label": "开始", "ui.x": "120", "ui.y": "120"}},
+			{ID: "analyze", Type: "chat_model", PreInput: "分析简历并提炼候选人画像。", Config: map[string]interface{}{"intent": "analyze_profile"}, Metadata: map[string]string{"ui.label": "简历分析", "ui.x": "320", "ui.y": "120", "ui.agent": "interviewsimulator"}},
+			{ID: "plan", Type: "chat_model", PreInput: "规划由浅入深的多轮主问题。", Config: map[string]interface{}{"intent": "plan_interview"}, Metadata: map[string]string{"ui.label": "问题规划", "ui.x": "500", "ui.y": "120", "ui.agent": "interviewsimulator"}},
+			{ID: "score", Type: "chat_model", PreInput: "对用户当前回答进行结构化评分。", Config: map[string]interface{}{"intent": "score_answer"}, Metadata: map[string]string{"ui.label": "回答评分", "ui.x": "680", "ui.y": "120", "ui.agent": "interviewsimulator"}},
+			{ID: "followup", Type: "chat_model", PreInput: "根据评分生成自适应追问。", Config: map[string]interface{}{"intent": "adaptive_followup"}, Metadata: map[string]string{"ui.label": "追问生成", "ui.x": "860", "ui.y": "120", "ui.agent": "interviewsimulator"}},
+			{ID: "question", Type: "chat_model", PreInput: "输出下一道主问题并返回本轮结果。", Config: map[string]interface{}{"intent": "ask_next_question"}, Metadata: map[string]string{"ui.label": "下一题", "ui.x": "1040", "ui.y": "120", "ui.agent": "interviewsimulator"}},
+			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "1220", "ui.y": "120"}},
+		},
+		Edges: []storage.EdgeDef{
+			{From: "start", To: "analyze"},
+			{From: "analyze", To: "plan"},
+			{From: "plan", To: "score"},
+			{From: "score", To: "followup"},
+			{From: "followup", To: "question"},
+			{From: "question", To: "end"},
+		},
+	}
+}
+
+func buildCareerRadarWorkflowDef() storage.WorkflowDefinition {
+	return storage.WorkflowDefinition{
+		StartNodeID: "start",
+		Nodes: []storage.NodeDef{
+			{ID: "start", Type: "start", Metadata: map[string]string{"ui.label": "开始", "ui.x": "120", "ui.y": "120"}},
+			{ID: "plan", Type: "chat_model", PreInput: "根据用户岗位意向生成 deepresearch 的检索任务。", Config: map[string]interface{}{"intent": "plan_research"}, Metadata: map[string]string{"ui.label": "检索任务规划", "ui.x": "320", "ui.y": "120", "ui.agent": "careerradar"}},
+			{ID: "research", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch"}}}, Metadata: map[string]string{"ui.label": "调用DeepResearch", "ui.x": "560", "ui.y": "120", "ui.agent": "careerradar"}},
+			{ID: "analyze", Type: "chat_model", PreInput: "基于检索结果输出匹配岗位推荐，并识别高风险岗位描述（加班文化、薪资模糊等）。", Config: map[string]interface{}{"intent": "summarize_jobs"}, Metadata: map[string]string{"ui.label": "岗位匹配与风险识别", "ui.x": "820", "ui.y": "120", "ui.agent": "careerradar"}},
+			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "1060", "ui.y": "120"}},
+		},
+		Edges: []storage.EdgeDef{
+			{From: "start", To: "plan"},
+			{From: "plan", To: "research"},
+			{From: "research", To: "analyze"},
+			{From: "analyze", To: "end"},
 		},
 	}
 }

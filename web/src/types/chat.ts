@@ -13,9 +13,12 @@ export type AgentModel = string
 
 export interface UploadedFileMeta {
   id: string
+  fileId?: string
   name: string
   size: number
   type: string
+  extractedText?: string
+  parseWarning?: string
   previewUrl?: string
 }
 

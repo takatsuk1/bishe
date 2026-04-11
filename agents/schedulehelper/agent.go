@@ -228,7 +228,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 		return orchestrator.ExecutionResult{Output: output}, nil
 	}
 
-	output, err := w.agent.callChatModel(ctx, taskID, query, req.NodeConfig)
+	output, err := w.agent.callChatModel(ctx, taskID, strings.TrimSpace(req.NodeID), query, req.NodeConfig)
 	if err != nil {
 		logger.Infof("[TRACE] schedulehelper.node_error task=%s node=%s type=%s err=%v", taskID, strings.TrimSpace(req.NodeID), req.NodeType, err)
 		return orchestrator.ExecutionResult{}, err
@@ -237,7 +237,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
-func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, nodeCfg map[string]any) (map[string]any, error) {
+func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string, query string, nodeCfg map[string]any) (map[string]any, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("query is empty")
@@ -275,7 +275,22 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 		return nil, fmt.Errorf("chat_model config missing url/model")
 	}
 
-	resp, err := llm.NewClient(baseURL, apiKey).ChatCompletion(ctx, model, []llm.Message{{Role: "user", Content: finalPrompt}}, nil, nil)
+	a.emitSemanticStep(ctx, taskID, "schedulehelper.llm.start", internalproto.StepStateInfo, "正在调用大模型："+nodeID)
+	client := llm.NewClient(baseURL, apiKey)
+	var streamBuf strings.Builder
+	lastEmitAt := time.Time{}
+	resp, err := client.ChatCompletionStream(ctx, model, []llm.Message{{Role: "user", Content: finalPrompt}}, nil, nil, func(delta string) error {
+		if strings.TrimSpace(delta) == "" {
+			return nil
+		}
+		streamBuf.WriteString(delta)
+		if !lastEmitAt.IsZero() && time.Since(lastEmitAt) < 150*time.Millisecond {
+			return nil
+		}
+		lastEmitAt = time.Now()
+		a.emitSemanticStep(ctx, taskID, "schedulehelper.llm.delta", internalproto.StepStateInfo, "正在调用大模型："+truncateText(streamBuf.String(), 140))
+		return nil
+	})
 	if err != nil {
 		logger.Warnf("[schedulehelper] llm failed task=%s intent=%s err=%v, using fallback", taskID, intent, err)
 		return map[string]any{"response": fallbackSchedulePlan(query)}, nil
@@ -284,6 +299,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	if resp == "" {
 		resp = fallbackSchedulePlan(query)
 	}
+	a.emitSemanticStep(ctx, taskID, "schedulehelper.llm.end", internalproto.StepStateEnd, "完成：大模型处理")
 
 	return map[string]any{"response": resp}, nil
 }
@@ -293,6 +309,30 @@ func withTaskManager(ctx context.Context, m internaltm.Manager) context.Context 
 		return ctx
 	}
 	return context.WithValue(ctx, ctxKeyTaskManager{}, m)
+}
+
+func taskManagerFromContext(ctx context.Context) internaltm.Manager {
+	if ctx == nil {
+		return nil
+	}
+	m, _ := ctx.Value(ctxKeyTaskManager{}).(internaltm.Manager)
+	return m
+}
+
+func (a *Agent) emitSemanticStep(ctx context.Context, taskID string, name string, state internalproto.StepState, message string) {
+	manager := taskManagerFromContext(ctx)
+	if manager == nil {
+		return
+	}
+	ev := internalproto.NewStepEvent("schedulehelper", "semantic", strings.TrimSpace(name), state, strings.TrimSpace(message))
+	token, err := internalproto.EncodeStepToken(ev)
+	if err != nil {
+		return
+	}
+	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
+		Role:  internalproto.MessageRoleAgent,
+		Parts: []internalproto.Part{internalproto.NewTextPart(token)},
+	})
 }
 
 func (a *Agent) startProgressReporter(ctx context.Context, taskID string, runID string, manager internaltm.Manager) func() {
@@ -545,6 +585,14 @@ func snapshotAnyForLog(v any, maxLen int) string {
 		return "<empty>"
 	}
 	return s
+}
+
+func truncateText(input string, max int) string {
+	input = strings.TrimSpace(input)
+	if max <= 0 || len(input) <= max {
+		return input
+	}
+	return strings.TrimSpace(input[:max]) + "..."
 }
 
 func buildScheduleHelperWorkflow() (*orchestrator.Workflow, error) {

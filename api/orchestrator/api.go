@@ -160,13 +160,15 @@ func (api *OrchestratorAPI) handleListAgents(w http.ResponseWriter, r *http.Requ
 
 	// 获取内置 agent 信息
 	agents := []AgentInfo{
-		{ID: "host", Name: "Host Agent", Description: "主控 Agent，负责路由决策和调用其他 Agent"},
-		{ID: "deepresearch", Name: "Deep Research Agent", Description: "深度研究 Agent，使用 Tavily 进行深度检索并整理答案"},
-		{ID: "urlreader", Name: "URL Reader Agent", Description: "URL 读取 Agent，使用本地 Fetch MCP 读取网页内容并生成回答"},
-		{ID: "lbshelper", Name: "LBS Helper Agent", Description: "位置服务 Agent，使用 AMap 和 Tavily 规划行程"},
-		{ID: "schedulehelper", Name: "Schedule Helper Agent", Description: "日程规划 Agent，输出任务优先级和时间安排建议"},
-		{ID: "financehelper", Name: "Finance Helper Agent", Description: "财务助理 Agent，支持记账、财务报告、财经资讯整理与理财建议"},
-		{ID: "memoreminder", Name: "Memo Reminder Agent", Description: "备忘录提醒 Agent，结构化保存用户提醒并定时弹窗通知"},
+		{ID: "host", Name: "主控编排助手", Description: "主控助手，负责路由决策和调用其他助手"},
+		{ID: "deepresearch", Name: "深度检索助手", Description: "深度检索助手，使用 Tavily 进行深度检索并整理答案"},
+		{ID: "urlreader", Name: "网页阅读助手", Description: "网页阅读助手，使用本地 Fetch MCP 读取网页内容并生成回答"},
+		{ID: "lbshelper", Name: "出行助手", Description: "出行助手，使用 AMap 和 Tavily 规划行程"},
+		{ID: "schedulehelper", Name: "日程规划助手", Description: "日程规划助手，输出任务优先级和时间安排建议"},
+		{ID: "financehelper", Name: "财务助手", Description: "财务助手，支持记账、财务报告、财经资讯整理与理财建议"},
+		{ID: "resumecustomizer", Name: "简历优化助手", Description: "简历优化助手，结合目标岗位与上传简历生成定制版简历"},
+		{ID: "interviewsimulator", Name: "面试模拟助手", Description: "面试模拟助手，基于上传简历生成结构化模拟面试内容"},
+		{ID: "careerradar", Name: "职场雷达助手", Description: "职场雷达助手，调用 deepresearch 推荐匹配岗位并识别高风险岗位描述"},
 	}
 
 	// 追加已发布用户 agent，保证 chat/workflow 页面可选择。

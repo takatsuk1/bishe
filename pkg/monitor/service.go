@@ -121,22 +121,6 @@ func (s *Service) FinishRun(ctx context.Context, in FinishRunInput) error {
 		DurationMs:   in.DurationMs,
 	})
 
-	if s.rules.IsWorkflowSlow(in.DurationMs) {
-		_ = s.TriggerAlert(ctx, TriggerAlertInput{
-			RunID:       run.RunID,
-			WorkflowID:  run.WorkflowID,
-			TaskID:      run.TaskID,
-			UserID:      run.UserID,
-			AgentID:     run.SourceAgentID,
-			AlertType:   "workflow_slow",
-			Severity:    "medium",
-			Title:       "Workflow execution is slow",
-			Content:     fmt.Sprintf("workflow duration %dms exceeds threshold %dms", in.DurationMs, s.rules.WorkflowSlowThresholdMs),
-			Status:      "open",
-			TriggeredAt: time.Now(),
-		})
-	}
-
 	return nil
 }
 

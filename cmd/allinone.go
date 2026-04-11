@@ -85,13 +85,23 @@ var (
 			} else {
 				startServer(serverConfig{name: "financehelper", addr: addr, handler: h})
 			}
-			if h, addr, err := buildMemoReminderHTTPServer(); err != nil {
+			if h, addr, err := buildResumeCustomizerHTTPServer(); err != nil {
 				logger.Fatal(err)
 			} else {
-				startServer(serverConfig{name: "memoreminder", addr: addr, handler: h})
+				startServer(serverConfig{name: "resumecustomizer", addr: addr, handler: h})
+			}
+			if h, addr, err := buildInterviewSimulatorHTTPServer(); err != nil {
+				logger.Fatal(err)
+			} else {
+				startServer(serverConfig{name: "interviewsimulator", addr: addr, handler: h})
+			}
+			if h, addr, err := buildCareerRadarHTTPServer(); err != nil {
+				logger.Fatal(err)
+			} else {
+				startServer(serverConfig{name: "careerradar", addr: addr, handler: h})
 			}
 
-			for _, name := range []string{"deepresearch", "lbshelper", "urlreader", "schedulehelper", "financehelper", "memoreminder"} {
+			for _, name := range []string{"deepresearch", "lbshelper", "urlreader", "schedulehelper", "financehelper", "resumecustomizer", "interviewsimulator", "careerradar"} {
 				serverURL := getAgentServerURLByName(cfg.HostAgent.Agents, name)
 				if serverURL == "" {
 					logger.Fatalf("host_agent.agents missing server_url for %s", name)
@@ -153,13 +163,15 @@ func startConfiguredUserAgents(cfg *config.MainConfig, projectRoot string) error
 	}
 
 	builtin := map[string]bool{
-		"deepresearch":   true,
-		"urlreader":      true,
-		"lbshelper":      true,
-		"schedulehelper": true,
-		"financehelper":  true,
-		"memoreminder":   true,
-		"host":           true,
+		"deepresearch":       true,
+		"urlreader":          true,
+		"lbshelper":          true,
+		"schedulehelper":     true,
+		"financehelper":      true,
+		"resumecustomizer":   true,
+		"interviewsimulator": true,
+		"careerradar":        true,
+		"host":               true,
 	}
 	usedConfiguredPorts := map[int]string{}
 	configuredUserAgents := map[string]bool{}

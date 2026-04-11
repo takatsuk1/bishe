@@ -1,114 +1,109 @@
-// package llm 包含大语言模型客户端相关功能，用于与 OpenAI 兼容的 API 进行交互
 package llm
 
 import (
-	"bytes"         // 字节缓冲区
-	"context"       // 上下文管理
-	"encoding/json" // JSON 编解码
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
-	"fmt"      // 格式化输出
-	"io"       // 输入输出
-	"net/http" // HTTP 客户端
-	"net/url"  // URL 解析
-	"path"     // 路径处理
-	"strings"  // 字符串处理
-	"time"     // 时间处理
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"path"
+	"strings"
+	"time"
 )
 
-// Message 定义了聊天消息的结构
 type Message struct {
-	Role    string `json:"role"`    // 消息角色（system、user、assistant）
-	Content string `json:"content"` // 消息内容
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
-// Client 定义了 LLM 客户端的结构
 type Client struct {
-	BaseURL string       // API 基础 URL
-	APIKey  string       // API 密钥
-	HTTP    *http.Client // HTTP 客户端
+	BaseURL string
+	APIKey  string
+	HTTP    *http.Client
 }
 
-// NewClient 创建一个新的 LLM 客户端实例
 func NewClient(baseURL, apiKey string) *Client {
-	// 清理基础 URL
 	baseURL = strings.TrimSpace(baseURL)
 	return &Client{
 		BaseURL: baseURL,
 		APIKey:  strings.TrimSpace(apiKey),
-		HTTP:    &http.Client{Timeout: 180 * time.Second}, // 设置 180 秒超时，降低大模型首包超时概率
+		HTTP:    &http.Client{Timeout: 180 * time.Second},
 	}
 }
 
-// chatCompletionRequest 定义了聊天完成请求的结构
 type chatCompletionRequest struct {
-	Model       string    `json:"model"`                 // 模型名称
-	Messages    []Message `json:"messages"`              // 消息列表
-	Stream      bool      `json:"stream"`                // 是否流式返回
-	MaxTokens   *int      `json:"max_tokens,omitempty"`  // 最大 token 数
-	Temperature *float64  `json:"temperature,omitempty"` // 温度参数
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	Stream      bool      `json:"stream"`
+	MaxTokens   *int      `json:"max_tokens,omitempty"`
+	Temperature *float64  `json:"temperature,omitempty"`
 }
 
-// chatCompletionResponse 定义了聊天完成响应的结构
 type chatCompletionResponse struct {
 	Choices []struct {
 		Message struct {
-			Content any `json:"content"` // 内容（可能是字符串或其他类型）
+			Content any `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
 }
 
-// embeddingsRequest 定义了嵌入请求的结构
-type embeddingsRequest struct {
-	Model string   `json:"model"` // 模型名称
-	Input []string `json:"input"` // 输入文本列表
+type chatCompletionStreamResponse struct {
+	Choices []struct {
+		Delta struct {
+			Content any `json:"content"`
+		} `json:"delta"`
+		Message struct {
+			Content any `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
 }
 
-// embeddingsResponse 定义了嵌入响应的结构
+type embeddingsRequest struct {
+	Model string   `json:"model"`
+	Input []string `json:"input"`
+}
+
 type embeddingsResponse struct {
 	Data []struct {
-		Embedding []float64 `json:"embedding"` // 嵌入向量
-		Index     int       `json:"index"`     // 索引
+		Embedding []float64 `json:"embedding"`
+		Index     int       `json:"index"`
 	} `json:"data"`
 }
 
-// ChatCompletion 调用聊天完成 API
 func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Message, maxTokens *int, temperature *float64) (string, error) {
-	// 检查基础 URL 是否为空
 	if strings.TrimSpace(c.BaseURL) == "" {
 		return "", fmt.Errorf("llm baseURL is empty")
 	}
-	// 构建端点 URL
 	endpoint, err := joinURL(c.BaseURL, "/v1/chat/completions")
 	if err != nil {
 		return "", err
 	}
 
-	// 构建请求体
 	reqBody := chatCompletionRequest{
 		Model:       model,
 		Messages:    messages,
-		Stream:      false, // 非流式
+		Stream:      false,
 		MaxTokens:   maxTokens,
 		Temperature: temperature,
 	}
-	// 序列化请求体
 	bts, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", err
 	}
 
-	// 创建 HTTP 请求
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bts))
 	if err != nil {
 		return "", err
 	}
-	// 设置请求头
 	req.Header.Set("Content-Type", "application/json")
 	if c.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
 
-	// 发送请求
 	start := time.Now()
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -119,107 +114,200 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 	}
 	defer resp.Body.Close()
 
-	// 读取响应体
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
-	// 检查响应状态码
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("llm http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	// 解析响应
 	var parsed chatCompletionResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", fmt.Errorf("llm invalid json: %w", err)
 	}
-	// 检查是否有选择项
 	if len(parsed.Choices) == 0 {
 		return "", fmt.Errorf("llm empty choices")
 	}
 
-	// 获取内容
-	content := parsed.Choices[0].Message.Content
-	// 处理不同类型的内容
-	switch v := content.(type) {
-	case string:
-		return strings.TrimSpace(v), nil
-	default:
-		// 尽力将内容转换为字符串
-		b, _ := json.Marshal(v)
-		return strings.TrimSpace(string(b)), nil
-	}
+	return contentToString(parsed.Choices[0].Message.Content), nil
 }
 
-// Embeddings 调用 OpenAI 兼容的嵌入端点，为每个输入字符串返回一个向量
-// 向量以 float32 类型返回，以匹配 Pinecone QueryByVectorValues 的期望
-func (c *Client) Embeddings(ctx context.Context, model string, input []string) ([][]float32, error) {
-	// 检查基础 URL 是否为空
+func (c *Client) ChatCompletionStream(
+	ctx context.Context,
+	model string,
+	messages []Message,
+	maxTokens *int,
+	temperature *float64,
+	onDelta func(delta string) error,
+) (string, error) {
 	if strings.TrimSpace(c.BaseURL) == "" {
-		return nil, fmt.Errorf("llm baseURL is empty")
+		return "", fmt.Errorf("llm baseURL is empty")
 	}
-	// 清理模型名称
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return nil, fmt.Errorf("embedding model is empty")
-	}
-	// 检查输入是否为空
-	if len(input) == 0 {
-		return nil, fmt.Errorf("embedding input is empty")
-	}
-	// 构建端点 URL
-	endpoint, err := joinURL(c.BaseURL, "/v1/embeddings")
+	endpoint, err := joinURL(c.BaseURL, "/v1/chat/completions")
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
-	// 构建请求体
-	reqBody := embeddingsRequest{Model: model, Input: input}
-	// 序列化请求体
+	reqBody := chatCompletionRequest{
+		Model:       model,
+		Messages:    messages,
+		Stream:      true,
+		MaxTokens:   maxTokens,
+		Temperature: temperature,
+	}
 	bts, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	// 创建 HTTP 请求
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bts))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	// 设置请求头
 	req.Header.Set("Content-Type", "application/json")
 	if c.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
 
-	// 发送请求
+	start := time.Now()
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() == context.DeadlineExceeded) {
+			return "", fmt.Errorf("llm timeout model=%s url=%s elapsed=%s: %w", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), err)
+		}
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("llm http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	var full strings.Builder
+	var eventData strings.Builder
+
+	flushEvent := func() error {
+		payload := strings.TrimSpace(eventData.String())
+		eventData.Reset()
+		if payload == "" {
+			return nil
+		}
+		if payload == "[DONE]" {
+			return io.EOF
+		}
+
+		var parsed chatCompletionStreamResponse
+		if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+			return fmt.Errorf("llm stream invalid json: %w", err)
+		}
+		for _, choice := range parsed.Choices {
+			delta := contentToString(choice.Delta.Content)
+			if delta == "" {
+				delta = contentToString(choice.Message.Content)
+			}
+			if delta == "" {
+				continue
+			}
+			full.WriteString(delta)
+			if onDelta != nil {
+				if err := onDelta(delta); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+
+		trimmed := strings.TrimRight(line, "\r\n")
+		if strings.TrimSpace(trimmed) == "" {
+			if ferr := flushEvent(); ferr != nil {
+				if errors.Is(ferr, io.EOF) {
+					return strings.TrimSpace(full.String()), nil
+				}
+				return "", ferr
+			}
+		} else if strings.HasPrefix(trimmed, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if data != "" {
+				if eventData.Len() > 0 {
+					eventData.WriteByte('\n')
+				}
+				eventData.WriteString(data)
+			}
+		}
+
+		if errors.Is(err, io.EOF) {
+			break
+		}
+	}
+
+	if err := flushEvent(); err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimSpace(full.String()), nil
+}
+
+func (c *Client) Embeddings(ctx context.Context, model string, input []string) ([][]float32, error) {
+	if strings.TrimSpace(c.BaseURL) == "" {
+		return nil, fmt.Errorf("llm baseURL is empty")
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil, fmt.Errorf("embedding model is empty")
+	}
+	if len(input) == 0 {
+		return nil, fmt.Errorf("embedding input is empty")
+	}
+	endpoint, err := joinURL(c.BaseURL, "/v1/embeddings")
+	if err != nil {
+		return nil, err
+	}
+
+	reqBody := embeddingsRequest{Model: model, Input: input}
+	bts, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bts))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	// 读取响应体
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
-	// 检查响应状态码
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("llm embeddings http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	// 解析响应
 	var parsed embeddingsResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, fmt.Errorf("llm embeddings invalid json: %w", err)
 	}
-	// 检查是否有数据
 	if len(parsed.Data) == 0 {
 		return nil, fmt.Errorf("llm embeddings empty data")
 	}
 
-	// 构建输出向量
 	out := make([][]float32, 0, len(parsed.Data))
 	for _, item := range parsed.Data {
 		vec := make([]float32, 0, len(item.Embedding))
@@ -231,18 +319,55 @@ func (c *Client) Embeddings(ctx context.Context, model string, input []string) (
 	return out, nil
 }
 
-// joinURL 连接基础 URL 和路径
+func contentToString(content any) string {
+	if content == nil {
+		return ""
+	}
+	switch v := content.(type) {
+	case string:
+		s := strings.TrimSpace(v)
+		if strings.EqualFold(s, "null") || s == "<nil>" {
+			return ""
+		}
+		return v
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if item == nil {
+				continue
+			}
+			switch t := item.(type) {
+			case map[string]any:
+				txt := fmt.Sprint(t["text"])
+				if strings.TrimSpace(txt) != "" && txt != "<nil>" && !strings.EqualFold(strings.TrimSpace(txt), "null") {
+					parts = append(parts, txt)
+				}
+			default:
+				txt := fmt.Sprint(item)
+				if strings.TrimSpace(txt) != "" && txt != "<nil>" && !strings.EqualFold(strings.TrimSpace(txt), "null") {
+					parts = append(parts, txt)
+				}
+			}
+		}
+		return strings.Join(parts, "")
+	default:
+		b, _ := json.Marshal(v)
+		s := strings.TrimSpace(string(b))
+		if s == "" || strings.EqualFold(s, "null") || s == "<nil>" {
+			return ""
+		}
+		return s
+	}
+}
+
 func joinURL(base, p string) (string, error) {
-	// 解析基础 URL
 	u, err := url.Parse(strings.TrimRight(base, "/"))
 	if err != nil {
 		return "", err
 	}
-	// 如果基础 URL 已经以 /v1 结尾，避免重复
 	if strings.HasSuffix(strings.TrimRight(u.Path, "/"), "/v1") && strings.HasPrefix(p, "/v1/") {
 		p = strings.TrimPrefix(p, "/v1")
 	}
-	// 连接路径
 	u.Path = path.Join(u.Path, p)
 	return u.String(), nil
 }

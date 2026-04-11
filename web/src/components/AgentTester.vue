@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref } from 'vue'
 import {
   testWorkflow,
@@ -46,7 +46,7 @@ async function handleTest() {
         input,
       })
     } else {
-      throw new Error('没有可测试的Agent或工作流')
+      throw new Error('没有可测试的助手或工作流')
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : '测试失败'
@@ -108,15 +108,45 @@ function getStateClass(state: string): string {
       return ''
   }
 }
+
+function stateLabel(state: string): string {
+  switch (state) {
+    case 'succeeded':
+      return '成功'
+    case 'failed':
+      return '失败'
+    case 'running':
+      return '运行中'
+    case 'queued':
+      return '排队中'
+    case 'canceled':
+      return '已取消'
+    default:
+      return state || '-'
+  }
+}
+
+function agentStatusLabel(state: string): string {
+  switch (state) {
+    case 'draft':
+      return '草稿'
+    case 'published':
+      return '已发布'
+    case 'stopped':
+      return '已停止'
+    default:
+      return state || '-'
+  }
+}
 </script>
 
 <template>
   <div class="agent-tester">
     <div class="test-section">
-      <h3>测试Agent</h3>
+      <h3>测试助手</h3>
       
       <div class="input-group">
-        <label>输入参数 (JSON)</label>
+        <label>输入参数（JSON）</label>
         <textarea
           v-model="testInput"
           rows="6"
@@ -126,7 +156,7 @@ function getStateClass(state: string): string {
 
       <div class="button-group">
         <button class="btn-test" @click="handleTest" :disabled="testing">
-          {{ testing ? '测试中...' : '运行测试' }}
+          {{ testing ? '测试中…' : '运行测试' }}
         </button>
 
         <template v-if="agent">
@@ -136,7 +166,7 @@ function getStateClass(state: string): string {
             @click="handlePublish"
             :disabled="publishing"
           >
-            {{ publishing ? '发布中...' : '发布Agent' }}
+            {{ publishing ? '发布中…' : '发布助手' }}
           </button>
 
           <button
@@ -166,9 +196,9 @@ function getStateClass(state: string): string {
       <h3>执行结果</h3>
       
       <div class="result-header">
-        <span class="run-id">Run ID: {{ testResult.runId }}</span>
+        <span class="run-id">运行编号： {{ testResult.runId }}</span>
         <span class="state-badge" :class="getStateClass(testResult.state)">
-          {{ testResult.state }}
+          {{ stateLabel(testResult.state) }}
         </span>
       </div>
 
@@ -192,7 +222,7 @@ function getStateClass(state: string): string {
             <span class="node-id">{{ node.nodeId }}</span>
             <span class="node-type">({{ node.nodeType }})</span>
             <span class="state-badge small" :class="getStateClass(node.state)">
-              {{ node.state }}
+              {{ stateLabel(node.state) }}
             </span>
             <span class="duration">{{ node.duration }}ms</span>
           </div>
@@ -205,11 +235,11 @@ function getStateClass(state: string): string {
     </div>
 
     <div v-if="agent" class="agent-info">
-      <h3>Agent信息</h3>
+      <h3>助手信息</h3>
       <div class="info-grid">
         <div class="info-item">
           <span class="label">状态</span>
-          <span class="value status-badge" :class="agent.status">{{ agent.status }}</span>
+          <span class="value status-badge" :class="agent.status">{{ agentStatusLabel(agent.status) }}</span>
         </div>
         <div class="info-item">
           <span class="label">进程状态</span>
@@ -499,3 +529,4 @@ h4 {
   color: #721c24;
 }
 </style>
+
