@@ -10,6 +10,8 @@ import { getMonitorRunFamily, listMonitorRunEvents, listMonitorRuns } from '../l
 import { getRun, listAgents } from '../lib/orchestratorApi'
 import { decodeStepPayload, extractStepPayloads, extractToken, parseNdjsonStream } from '../lib/stream'
 import { loadConversations, saveConversations } from '../lib/storage'
+import PageContainer from '../components/PageContainer.vue'
+import PageHeader from '../components/PageHeader.vue'
 import type {
   AgentModel,
   ChatMessage,
@@ -91,6 +93,28 @@ const canSend = computed(() => prompt.value.trim().length > 0 && !isStreaming.va
 const selectedAgentMeta = computed(() =>
   availableAgents.value.find((agent) => agent.value === selectedModel.value),
 )
+const conversationCount = computed(() => conversations.value.length)
+const activeAttachmentCount = computed(() => draftUploads.value.length)
+const latestStepLabel = computed(() => {
+  const latest = runStepEvents.value[runStepEvents.value.length - 1]
+  return latest?.messageZh ?? '等待新的执行步骤'
+})
+const activeRunStateLabel = computed(() => {
+  const runState = (runSnapshot.value?.state ?? '').trim()
+  if (!runState) {
+    return formatTaskState(status.value)
+  }
+  if (runState === 'succeeded') {
+    return formatTaskState('completed')
+  }
+  if (runState === 'failed') {
+    return formatTaskState('failed')
+  }
+  if (runState === 'canceled') {
+    return formatTaskState('canceled')
+  }
+  return formatTaskState('running')
+})
 
 watch(
   conversations,
@@ -131,13 +155,15 @@ watch(
   async ([nextRunId, nextTaskID]) => {
     stopRunPolling()
     stopMonitorPolling()
-    runSnapshot.value = null
-    runPollError.value = ''
-    monitorStepEvents.value = []
-    monitorStepError.value = ''
     if (!nextRunId && !nextTaskID) {
+      runSnapshot.value = null
+      runPollError.value = ''
+      monitorStepEvents.value = []
+      monitorStepError.value = ''
       return
     }
+    runPollError.value = ''
+    monitorStepError.value = ''
     if (nextRunId) {
       await pollRunOnce(nextRunId)
       startRunPolling(nextRunId)
@@ -362,6 +388,19 @@ const runStepEvents = computed(() =>
   detailedStepEvents.value.filter((ev) => {
     const phase = (ev.phase ?? '').trim().toLowerCase()
     const name = (ev.name ?? '').trim().toLowerCase()
+    if (
+      phase === 'workflow_started' ||
+      phase === 'workflow_finished' ||
+      phase === 'workflow_failed' ||
+      phase === 'model_called' ||
+      phase === 'tool_called' ||
+      phase === 'agent_called' ||
+      phase === 'retry_triggered' ||
+      phase === 'timeout_triggered' ||
+      phase === 'alert_triggered'
+    ) {
+      return false
+    }
     if (phase === 'semantic') {
       return false
     }
@@ -746,7 +785,6 @@ async function pollMonitorStepsOnce(runId: string, taskId: string): Promise<void
   try {
     const resolvedRunID = await resolveMonitorRunID(runId, taskId)
     if (!resolvedRunID) {
-      monitorStepEvents.value = []
       monitorStepError.value = ''
       return
     }
@@ -754,7 +792,6 @@ async function pollMonitorStepsOnce(runId: string, taskId: string): Promise<void
     const family = await getMonitorRunFamily(resolvedRunID, { limit: 20 })
     const runs = family.runs ?? []
     if (runs.length === 0) {
-      monitorStepEvents.value = []
       monitorStepError.value = ''
       return
     }
@@ -782,7 +819,18 @@ async function pollMonitorStepsOnce(runId: string, taskId: string): Promise<void
     })
 
     const nodeTypeByID = nodeTypeFromEvents(sorted)
-    monitorStepEvents.value = sorted.map((ev) => monitorEventToStep(ev, nodeTypeByID)).slice(-600)
+    const nextSteps = sorted.map((ev) => monitorEventToStep(ev, nodeTypeByID))
+    const merged = [...monitorStepEvents.value, ...nextSteps]
+    const stepDedup = new Map<string, StepEvent>()
+    for (const ev of merged) {
+      const key = `${ev.ts}|${ev.agent}|${ev.phase}|${ev.name}|${ev.state}|${ev.messageZh}`
+      if (!stepDedup.has(key)) {
+        stepDedup.set(key, ev)
+      }
+    }
+    monitorStepEvents.value = [...stepDedup.values()]
+      .sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
+      .slice(-5000)
     monitorStepError.value = ''
   } catch (err) {
     monitorStepError.value = (err as Error).message
@@ -792,9 +840,6 @@ async function pollMonitorStepsOnce(runId: string, taskId: string): Promise<void
 function startMonitorPolling(runId: string, taskId: string): void {
   stopMonitorPolling()
   monitorPollTimer = window.setInterval(async () => {
-    if (isStreaming.value) {
-      return
-    }
     await pollMonitorStepsOnce(runId, taskId)
   }, 1200)
 }
@@ -821,9 +866,6 @@ async function pollRunOnce(runId: string): Promise<void> {
 function startRunPolling(runId: string): void {
   stopRunPolling()
   runPollTimer = window.setInterval(async () => {
-    if (isStreaming.value) {
-      return
-    }
     await pollRunOnce(runId)
   }, 600)
 }
@@ -1027,7 +1069,7 @@ async function sendMessage(): Promise<void> {
               seen.add(key)
             }
           }
-          draft.stepEvents = existing.slice(-300)
+          draft.stepEvents = existing.slice(-5000)
         }
 
         const assistant = draft.messages.find((item) => item.id === assistantMessage.id)
@@ -1188,160 +1230,516 @@ function renderMarkdown(content: string): string {
 </script>
 
 <template>
-  <div class="layout layout--chat">
-    <aside class="sidebar">
-      <div class="brand">
-        <p class="eyebrow">mmmanus</p>
-        <h1>对话控制台</h1>
+  <PageContainer mode="fluid">
+  <div class="module-page module-page--chat assistant-console">
+    <PageHeader
+      eyebrow="ASSISTANT CONSOLE"
+      title="对话控制台"
+      description="管理会话、查看回复内容与执行过程。"
+    />
+
+    <section class="assistant-console__info-bar module-section" v-if="activeConversation">
+      <div class="assistant-console__info-main">
+        <p class="assistant-console__eyebrow">Console Status</p>
+        <div class="assistant-console__info-title">
+          <strong>{{ selectedAgentMeta?.label ?? selectedModel }}</strong>
+          <span class="task-text">当前助手标识：{{ selectedModel }}</span>
+        </div>
+        <p class="assistant-console__info-desc">
+          {{ selectedAgentMeta?.description || '当前助手正在等待新的输入。' }}
+        </p>
       </div>
 
-      <button class="new-chat" type="button" @click="startConversation">新建对话</button>
+      <div class="assistant-console__info-meta">
+        <div class="assistant-console__metric">
+          <span>状态</span>
+          <strong :class="['chip', status]">{{ formatTaskState(status) }}</strong>
+        </div>
+        <div class="assistant-console__metric">
+          <span>任务编号</span>
+          <strong>{{ activeConversation.taskId ?? '—' }}</strong>
+        </div>
+        <div class="assistant-console__metric">
+          <span>运行编号</span>
+          <strong>{{ activeConversation.runId ?? '—' }}</strong>
+        </div>
+        <div class="assistant-console__metric">
+          <span>会话总数</span>
+          <strong>{{ conversationCount }}</strong>
+        </div>
+      </div>
+    </section>
 
-      <ul class="conversation-list">
-        <li
-          v-for="item in conversations"
-          :key="item.id"
-          :class="['conversation-item', { active: item.id === activeConversationId }]"
-          @click="activeConversationId = item.id"
-        >
-          <div class="conversation-meta">
-            <p class="conversation-title">{{ item.title }}</p>
-            <p class="conversation-time">{{ formatTime(item.updatedAt) }}</p>
+    <div class="layout layout--chat workspace-layout assistant-console__layout">
+      <aside class="sidebar assistant-console__sidebar">
+        <div class="assistant-console__sidebar-head">
+          <div class="brand assistant-console__brand">
+            <p class="eyebrow">多智能体助手平台</p>
+            <h1>会话列表</h1>
+            <p class="assistant-console__sidebar-tip">管理历史对话并切换当前上下文。</p>
           </div>
-          <div class="conversation-actions">
-            <button type="button" @click.stop="renameConversation(item.id)">重命名</button>
-            <button type="button" @click.stop="removeConversation(item.id)">删除</button>
-          </div>
-        </li>
-      </ul>
-    </aside>
 
-    <main class="chat-panel chat-page" v-if="activeConversation">
-      <header class="toolbar">
-        <div class="toolbar-main">
-          <strong>当前助手：{{ selectedAgentMeta?.label ?? selectedModel }}</strong>
-          <span class="task-text">标识：{{ selectedModel }}</span>
+          <button class="new-chat assistant-console__new-chat" type="button" @click="startConversation">新建对话</button>
         </div>
 
-        <div class="status-board">
-          <span :class="['chip', status]">{{ formatTaskState(status) }}</span>
-          <span class="task-text">任务编号：{{ activeConversation.taskId ?? '—' }}</span>
-          <span class="task-text">运行编号：{{ activeConversation.runId ?? '—' }}</span>
-        </div>
-      </header>
-
-      <section class="run-steps" v-if="activeConversation.runId">
-        <div class="run-steps-header">
-          <strong>编排进度</strong>
-          <span class="task-text" v-if="runSnapshot">{{ formatTaskState(runSnapshot.state as TaskState) }}</span>
-          <span class="task-text" v-if="runPollError">{{ runPollError }}</span>
-        </div>
-        <p class="task-text" v-if="runSnapshot">
-          当前节点：{{ runSnapshot.currentNodeId ?? '—' }}
-        </p>
-        <div class="run-steps-chips" v-if="runSnapshot">
-          <span
-            v-for="nodeId in runStepNodeIds"
-            :key="nodeId"
-            :class="[
-              'chip',
-              'tiny',
-              nodeId === (runSnapshot.currentNodeId ?? '') && runSnapshot.state === 'running'
-                ? 'running'
-                : 'completed',
-            ]"
+        <ul class="conversation-list assistant-console__conversation-list">
+          <li
+            v-for="item in conversations"
+            :key="item.id"
+            :class="['conversation-item assistant-console__conversation-item', { active: item.id === activeConversationId }]"
+            @click="activeConversationId = item.id"
           >
-            {{ nodeId }}
-          </span>
-        </div>
-      </section>
-
-      <section class="step-bar" v-if="runStepEvents.length">
-        <strong class="step-bar-title">运行步骤</strong>
-        <p class="task-text" v-if="monitorStepError">{{ monitorStepError }}</p>
-        <div class="step-scroller" ref="stepScroller" title="可上下滚动查看所有步骤" @scroll.passive="onStepScroll">
-          <div class="step-track">
-            <div
-              v-for="ev in runStepEvents"
-              :key="`${ev.ts}-${ev.agent}-${ev.phase}-${ev.name}-${ev.state}-${ev.messageZh}`"
-              class="step-row"
-            >
-              <span class="task-text">{{ formatTime(ev.ts) }}</span>
-              <span :class="['chip', 'tiny', stepChipClass(ev.state)]">{{ stepStateLabel(ev.state) }}</span>
-              <span class="task-text">{{ ev.agent }}</span>
-              <span class="step-row-message">{{ ev.messageZh }}</span>
+            <div class="conversation-meta assistant-console__conversation-meta">
+              <div>
+                <p class="conversation-title">{{ item.title }}</p>
+                <p class="assistant-console__conversation-subtitle">
+                  {{ item.model }}
+                  <span v-if="item.taskId">· {{ item.taskId }}</span>
+                </p>
+              </div>
+              <p class="conversation-time">{{ formatTime(item.updatedAt) }}</p>
             </div>
-          </div>
-        </div>
-        <div class="composer-actions" v-if="!stepAutoFollow">
-          <div class="buttons">
-            <button type="button" class="send" @click="jumpStepsToBottom">回到底部</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="agent-tip">
-        <p>
-          {{ selectedAgentMeta?.description }}
-        </p>
-      </section>
-
-      <section class="messages" ref="messageScroller" @scroll.passive="onMessagesScroll">
-        <article
-          v-for="msg in activeConversation.messages"
-          :key="msg.id"
-          :class="['message', msg.role, { streaming: isStreamingAssistantMessage(msg) }]"
-        >
-          <header>
-            <strong>{{ msg.role === 'user' ? '你' : '助手' }}</strong>
-            <span>{{ formatTime(msg.createdAt) }}</span>
-            <span v-if="msg.role === 'user'" :class="['chip tiny', msg.status ?? 'queued']">{{ formatTaskState(msg.status ?? 'queued') }}</span>
-          </header>
-          <section v-if="showInlineProgress(msg)" class="assistant-progress-card">
-            <div class="assistant-progress-head">执行进度</div>
-            <ul class="assistant-progress-list">
-              <li v-for="ev in semanticProgress" :key="`${ev.ts}-${ev.agent}-${ev.phase}-${ev.name}-${ev.state}-${ev.messageZh}`" class="assistant-progress-item">
-                <span class="assistant-progress-text">{{ ev.messageZh }}</span>
-              </li>
-            </ul>
-          </section>
-          <p v-if="messageContentForRender(msg) && isStreamingAssistantMessage(msg)" class="content">{{ messageContentForRender(msg) }}</p>
-          <div v-else-if="messageContentForRender(msg)" class="content markdown" v-html="renderMarkdown(messageContentForRender(msg))"></div>
-          <p v-else class="content">{{ msg.role === 'assistant' ? '...' : '' }}</p>
-          <ul v-if="msg.attachments && msg.attachments.length" class="attachment-list">
-            <li v-for="file in msg.attachments" :key="file.id">{{ file.name }} ({{ file.size }} bytes)</li>
-          </ul>
-        </article>
-      </section>
-
-      <section class="upload-zone" @dragenter="preventDefaults" @dragover="preventDefaults" @drop="onDrop">
-        <label for="upload-input">添加附件</label>
-        <input id="upload-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx" multiple @change="onFileInput" />
-        <p>拖拽文件到这里（单个最大 20MB）。当前版本仅发送文件元信息。</p>
-        <ul v-if="draftUploads.length" class="draft-files">
-          <li v-for="file in draftUploads" :key="file.id">
-            <span>{{ file.name }} ({{ file.size }} bytes)</span>
-            <button type="button" @click="removeUpload(file.id)">移除</button>
+            <div class="conversation-actions">
+              <button type="button" @click.stop="renameConversation(item.id)">重命名</button>
+              <button type="button" @click.stop="removeConversation(item.id)">删除</button>
+            </div>
           </li>
         </ul>
-      </section>
+      </aside>
 
-      <footer class="composer">
-        <textarea
-          v-model="prompt"
-          rows="4"
-          placeholder="请输入问题。按 Shift+Enter 换行。"
-          @keydown.enter.exact.prevent="sendMessage"
-        />
-        <div class="composer-actions">
-          <p class="error" v-if="errorText">{{ errorText }}</p>
-          <div class="buttons">
-            <button type="button" class="cancel" :disabled="!isStreaming" @click="cancelRequest">取消</button>
-            <button type="button" class="send" :disabled="!canSend" @click="sendMessage">发送</button>
+      <main class="chat-panel chat-page chat-main module-section assistant-console__main" v-if="activeConversation">
+        <header class="assistant-console__main-head">
+          <div class="assistant-console__main-title">
+            <p class="assistant-console__eyebrow">Conversation</p>
+            <h2>{{ activeConversation.title }}</h2>
           </div>
-        </div>
-      </footer>
-    </main>
+          <div class="assistant-console__main-badges">
+            <span class="chip tiny">{{ selectedAgentMeta?.label ?? selectedModel }}</span>
+            <span class="chip tiny queued">附件 {{ activeAttachmentCount }}</span>
+          </div>
+        </header>
 
+        <section class="chat-main-body assistant-console__body">
+          <section class="messages-panel assistant-console__messages-panel">
+            <section class="messages assistant-console__messages" ref="messageScroller" @scroll.passive="onMessagesScroll">
+              <article
+                v-for="msg in activeConversation.messages"
+                :key="msg.id"
+                :class="['message assistant-console__message', msg.role, { streaming: isStreamingAssistantMessage(msg) }]"
+              >
+                <header>
+                  <strong>{{ msg.role === 'user' ? '你' : '助手' }}</strong>
+                  <span>{{ formatTime(msg.createdAt) }}</span>
+                  <span v-if="msg.role === 'user'" :class="['chip tiny', msg.status ?? 'queued']">
+                    {{ formatTaskState(msg.status ?? 'queued') }}
+                  </span>
+                </header>
+                <section v-if="showInlineProgress(msg)" class="assistant-progress-card">
+                  <div class="assistant-progress-head">执行进度</div>
+                  <ul class="assistant-progress-list">
+                    <li
+                      v-for="ev in semanticProgress"
+                      :key="`${ev.ts}-${ev.agent}-${ev.phase}-${ev.name}-${ev.state}-${ev.messageZh}`"
+                      class="assistant-progress-item"
+                    >
+                      <span class="assistant-progress-text">{{ ev.messageZh }}</span>
+                    </li>
+                  </ul>
+                </section>
+                <p v-if="messageContentForRender(msg) && isStreamingAssistantMessage(msg)" class="content">
+                  {{ messageContentForRender(msg) }}
+                </p>
+                <div
+                  v-else-if="messageContentForRender(msg)"
+                  class="content markdown"
+                  v-html="renderMarkdown(messageContentForRender(msg))"
+                ></div>
+                <p v-else class="content">{{ msg.role === 'assistant' ? '...' : '' }}</p>
+                <ul v-if="msg.attachments && msg.attachments.length" class="attachment-list">
+                  <li v-for="file in msg.attachments" :key="file.id">{{ file.name }} ({{ file.size }} bytes)</li>
+                </ul>
+              </article>
+            </section>
+          </section>
+
+          <section class="composer-panel assistant-console__composer-panel">
+            <section class="upload-zone assistant-console__upload-zone" @dragenter="preventDefaults" @dragover="preventDefaults" @drop="onDrop">
+              <div class="assistant-console__upload-head">
+                <label for="upload-input">添加附件</label>
+                <span class="task-text">支持 PDF / Office，单个最大 20MB</span>
+              </div>
+              <input
+                id="upload-input"
+                type="file"
+                accept=".pdf,.doc,.docx,.xls,.xlsx"
+                multiple
+                @change="onFileInput"
+              />
+              <p>拖拽文件到这里或点击选择，当前版本仅发送文件元信息与可提取文本内容。</p>
+              <ul v-if="draftUploads.length" class="draft-files">
+                <li v-for="file in draftUploads" :key="file.id">
+                  <span>{{ file.name }} ({{ file.size }} bytes)</span>
+                  <button type="button" @click="removeUpload(file.id)">移除</button>
+                </li>
+              </ul>
+            </section>
+
+            <footer class="composer assistant-console__composer">
+              <textarea
+                v-model="prompt"
+                rows="4"
+                placeholder="请输入问题，按 Shift+Enter 换行。"
+                @keydown.enter.exact.prevent="sendMessage"
+              />
+              <div class="composer-actions assistant-console__composer-actions">
+                <p class="error" v-if="errorText">{{ errorText }}</p>
+                <div class="buttons">
+                  <button type="button" class="cancel" :disabled="!isStreaming" @click="cancelRequest">取消</button>
+                  <button type="button" class="send" :disabled="!canSend" @click="sendMessage">发送</button>
+                </div>
+              </div>
+            </footer>
+          </section>
+        </section>
+      </main>
+
+      <aside class="preview-panel chat-execution module-section assistant-console__execution" v-if="activeConversation">
+        <header class="assistant-console__execution-head">
+          <div>
+            <p class="assistant-console__eyebrow">Execution</p>
+            <strong>执行过程</strong>
+          </div>
+          <span class="task-text" v-if="runPollError">{{ runPollError }}</span>
+        </header>
+
+        <section class="run-steps assistant-console__execution-summary">
+          <div class="run-steps-header">
+            <strong>编排进度</strong>
+            <span class="task-text">{{ activeRunStateLabel }}</span>
+          </div>
+          <p class="task-text">当前节点：{{ runSnapshot?.currentNodeId ?? '—' }}</p>
+          <p class="task-text">最新步骤：{{ latestStepLabel }}</p>
+          <div class="run-steps-chips" v-if="runSnapshot && runStepNodeIds.length">
+            <span
+              v-for="nodeId in runStepNodeIds"
+              :key="nodeId"
+              :class="[
+                'chip',
+                'tiny',
+                nodeId === (runSnapshot.currentNodeId ?? '') && runSnapshot.state === 'running' ? 'running' : 'completed',
+              ]"
+            >
+              {{ nodeId }}
+            </span>
+          </div>
+        </section>
+
+        <section class="step-bar assistant-console__step-bar">
+          <strong class="step-bar-title">运行步骤</strong>
+          <p class="task-text" v-if="monitorStepError">{{ monitorStepError }}</p>
+          <p class="task-text" v-if="!runStepEvents.length">暂无步骤</p>
+          <div
+            v-if="runStepEvents.length"
+            class="step-scroller"
+            ref="stepScroller"
+            title="可上下滚动查看所有步骤"
+            @scroll.passive="onStepScroll"
+          >
+            <div class="step-track">
+              <div
+                v-for="ev in runStepEvents"
+                :key="`${ev.ts}-${ev.agent}-${ev.phase}-${ev.name}-${ev.state}-${ev.messageZh}`"
+                class="step-row assistant-console__step-row"
+              >
+                <span class="task-text">{{ formatTime(ev.ts) }}</span>
+                <span :class="['chip', 'tiny', stepChipClass(ev.state)]">{{ stepStateLabel(ev.state) }}</span>
+                <span class="task-text">{{ ev.agent }}</span>
+                <span class="step-row-message">{{ ev.messageZh }}</span>
+              </div>
+            </div>
+          </div>
+          <div class="composer-actions" v-if="!stepAutoFollow && runStepEvents.length">
+            <div class="buttons">
+              <button type="button" class="send" @click="jumpStepsToBottom">回到底部</button>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </div>
   </div>
+  </PageContainer>
 </template>
+
+<style scoped>
+.assistant-console {
+  gap: 14px;
+}
+
+.assistant-console__info-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(420px, 0.8fr);
+  gap: 16px;
+  padding: 16px 18px;
+  background:
+    radial-gradient(circle at 10% 12%, rgba(182, 225, 207, 0.18), transparent 28%),
+    radial-gradient(circle at 92% 18%, rgba(220, 203, 244, 0.18), transparent 30%),
+    var(--bg-panel);
+}
+
+.assistant-console__info-main,
+.assistant-console__info-meta,
+.assistant-console__main-title {
+  display: grid;
+  gap: 8px;
+}
+
+.assistant-console__eyebrow {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #5f8a78;
+  font-weight: 700;
+}
+
+.assistant-console__info-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.assistant-console__info-title strong {
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1.1;
+}
+
+.assistant-console__info-desc,
+.assistant-console__sidebar-tip,
+.assistant-console__conversation-subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.assistant-console__info-meta {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.assistant-console__metric {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.assistant-console__metric span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.assistant-console__metric strong {
+  font-size: 14px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.assistant-console__layout.layout--chat {
+  grid-template-columns: 280px minmax(720px, 1fr) 320px;
+  gap: 16px;
+}
+
+.assistant-console__sidebar,
+.assistant-console__main,
+.assistant-console__execution {
+  max-height: calc(100vh - 218px);
+}
+
+.assistant-console__sidebar {
+  padding: 14px;
+  gap: 14px;
+}
+
+.assistant-console__sidebar-head {
+  display: grid;
+  gap: 12px;
+}
+
+.assistant-console__brand {
+  gap: 6px;
+}
+
+.assistant-console__brand h1 {
+  margin: 6px 0 0;
+}
+
+.assistant-console__new-chat {
+  width: 100%;
+  min-height: 44px;
+}
+
+.assistant-console__conversation-list {
+  gap: 10px;
+}
+
+.assistant-console__conversation-item {
+  padding: 12px;
+  border-radius: 16px;
+}
+
+.assistant-console__conversation-item.active {
+  border-color: #b9c6d8;
+  background: linear-gradient(132deg, rgba(204, 232, 220, 0.38), rgba(226, 216, 246, 0.26));
+}
+
+.assistant-console__conversation-meta {
+  align-items: flex-start;
+}
+
+.assistant-console__main {
+  padding: 16px;
+  gap: 14px;
+}
+
+.assistant-console__main-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 14px 16px;
+}
+
+.assistant-console__main-title h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 24px;
+  line-height: 1.15;
+}
+
+.assistant-console__main-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.assistant-console__body {
+  gap: 12px;
+}
+
+.assistant-console__messages-panel,
+.assistant-console__composer-panel {
+  border-radius: 18px;
+}
+
+.assistant-console__messages-panel {
+  padding: 12px;
+}
+
+.assistant-console__messages {
+  gap: 12px;
+  padding-right: 6px;
+}
+
+.assistant-console__message {
+  border-radius: 18px;
+  padding: 12px 14px;
+}
+
+.assistant-console__message.user {
+  background: linear-gradient(135deg, rgba(244, 250, 246, 0.96), rgba(255, 255, 255, 0.94));
+}
+
+.assistant-console__message.assistant {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(249, 250, 252, 0.94));
+}
+
+.assistant-console__upload-zone {
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(247, 250, 248, 0.9), rgba(249, 248, 252, 0.88));
+}
+
+.assistant-console__upload-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.assistant-console__composer {
+  border-top: none;
+  padding-top: 0;
+}
+
+.assistant-console__composer textarea {
+  min-height: 116px;
+  border-radius: 14px;
+}
+
+.assistant-console__composer-actions {
+  align-items: flex-end;
+}
+
+.assistant-console__execution {
+  padding: 14px;
+  gap: 12px;
+}
+
+.assistant-console__execution-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.assistant-console__execution-summary {
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(247, 250, 248, 0.88), rgba(249, 248, 252, 0.86));
+}
+
+.assistant-console__step-bar {
+  border-radius: 16px;
+}
+
+.assistant-console__step-row {
+  align-items: center;
+}
+
+@media (max-width: 1280px) {
+  .assistant-console__info-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .assistant-console__info-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .assistant-console__layout.layout--chat {
+    grid-template-columns: 250px minmax(0, 1fr) 300px;
+  }
+}
+
+@media (max-width: 960px) {
+  .assistant-console__layout.layout--chat {
+    grid-template-columns: 1fr;
+  }
+
+  .assistant-console__sidebar,
+  .assistant-console__main,
+  .assistant-console__execution {
+    max-height: none;
+  }
+
+  .assistant-console__info-meta {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

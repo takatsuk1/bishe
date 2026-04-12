@@ -34,7 +34,7 @@ async function handleSubmit(): Promise<void> {
       password: password.value,
       displayName: displayName.value.trim() || username.value.trim(),
     })
-    await router.replace('/')
+    await router.replace('/workspace')
   } catch (e) {
     error.value = e instanceof Error ? e.message : '注册失败'
   } finally {

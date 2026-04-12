@@ -35,6 +35,9 @@ import type {
   WorkflowSummary,
 } from '../types/workflow'
 import { canManageOwnWorkflow, currentPrimaryRole } from '../lib/permission'
+import PageContainer from '../components/PageContainer.vue'
+import PageHeader from '../components/PageHeader.vue'
+import ModuleSectionCard from '../components/ModuleSectionCard.vue'
 
 type PendingLink =
   | { fromNodeId: string; kind: 'next' }
@@ -91,6 +94,16 @@ const readOnlyMode = computed(() => !canManageOwnWorkflow())
 const roleLabel = computed(() => currentPrimaryRole.value)
 
 const startNodeId = computed(() => workflow.value?.startNodeId ?? '')
+const currentWorkflowDisplayName = computed(() => workflow.value?.name?.trim() || workflow.value?.id || '未命名工作流')
+const currentWorkflowSavedAt = computed(() => {
+  if (isDraft.value) {
+    return ttlMinutes.value > 0 ? `草稿剩余 ${ttlMinutes.value} 分钟` : '草稿未保存到正式列表'
+  }
+  if (updatedAt.value) {
+    return `已保存：${new Date(updatedAt.value).toLocaleString()}`
+  }
+  return '尚未保存'
+})
 
 function getDelegateTarget(node: NodeDefinition): string {
   return node.metadata?.['set.agent_name'] ?? ''
@@ -1615,68 +1628,92 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="brand">
-        <p class="eyebrow">orchestrator</p>
-        <h1>工作流</h1>
+  <PageContainer mode="fluid">
+  <div class="module-page module-page--workflow workflow-studio">
+    <PageHeader
+      eyebrow="ORCHESTRATOR"
+      title="工作流编排"
+      description="可视化管理节点、连接关系、测试运行与发布流程。"
+    />
+
+    <div class="layout workspace-layout workflow-studio__layout">
+    <ModuleSectionCard>
+      <aside class="sidebar workflow-sidebar-frame workflow-studio__sidebar">
+      <div class="brand workflow-studio__sidebar-brand">
+        <p class="eyebrow">workflow studio</p>
+        <h1>工作流列表</h1>
+        <p class="workflow-studio__sidebar-tip">集中管理当前可用工作流与草稿入口。</p>
       </div>
 
-      <div class="workflow-sidebar-actions">
+      <div class="workflow-sidebar-actions workflow-studio__sidebar-actions">
         <button v-if="!readOnlyMode" class="new-chat" type="button" @click="createWorkflow">新建工作流</button>
         <button v-if="!readOnlyMode" class="cancel" type="button" @click="createExampleWorkflow">生成示例编排</button>
         <p v-if="readOnlyMode" class="task-text">当前角色 {{ roleLabel }}：只读模式</p>
       </div>
 
-      <ul class="conversation-list">
+      <ul class="conversation-list workflow-studio__workflow-list">
         <li
           v-for="item in draftWorkflows"
           :key="item.id"
-          :class="['conversation-item', { active: item.id === activeWorkflowId }]"
+          :class="['conversation-item workflow-studio__workflow-item', { active: item.id === activeWorkflowId }]"
           @click="loadWorkflowById(item.id)"
         >
           <div class="conversation-meta">
             <p class="conversation-title">{{ item.name || item.id }} <span class="draft-badge">草稿 {{ item.ttlMinutes }}分钟</span></p>
+            <p class="workflow-studio__workflow-subtitle">临时草稿 · 待保存</p>
           </div>
         </li>
         <li
           v-for="item in savedWorkflows"
           :key="item.id"
-          :class="['conversation-item', { active: item.id === activeWorkflowId }]"
+          :class="['conversation-item workflow-studio__workflow-item', { active: item.id === activeWorkflowId }]"
           @click="loadWorkflowById(item.id)"
         >
           <div class="conversation-meta">
             <p class="conversation-title">{{ item.name || item.id }}</p>
+            <p class="workflow-studio__workflow-subtitle">正式工作流 · {{ item.id }}</p>
             <p class="conversation-time">{{ new Date(item.updatedAt).toLocaleString() }}</p>
           </div>
         </li>
       </ul>
-    </aside>
+      </aside>
+    </ModuleSectionCard>
 
-    <main class="chat-panel workflow-panel" v-if="workflow">
-      <header class="toolbar">
-        <div class="workflow-title">
-          <strong>{{ workflow.name }}</strong>
-          <span class="task-text">id: {{ workflow.id }}</span>
-          <span class="draft-badge" v-if="isDraft">草稿 {{ ttlMinutes }}分钟</span>
-          <span class="task-text" v-if="updatedAt && !isDraft">已保存：{{ new Date(updatedAt).toLocaleString() }}</span>
+    <ModuleSectionCard class="workflow-main-frame" v-if="workflow">
+      <main class="chat-panel workflow-panel workflow-studio__panel">
+      <header class="workflow-studio__topbar">
+        <div class="workflow-studio__info-card">
+          <p class="workflow-studio__eyebrow">Current Workflow</p>
+          <div class="workflow-studio__info-title">
+            <strong>{{ currentWorkflowDisplayName }}</strong>
+            <span class="draft-badge" v-if="isDraft">草稿 {{ ttlMinutes }}分钟</span>
+          </div>
+          <div class="workflow-studio__info-meta">
+            <span class="task-text">ID：{{ workflow.id }}</span>
+            <span class="task-text">{{ currentWorkflowSavedAt }}</span>
+          </div>
         </div>
 
-        <div class="workflow-buttons">
-          <button type="button" class="cancel" @click="toggleInspector">
-            {{ inspectorCollapsed ? '展开属性面板' : '收起属性面板' }}
-          </button>
-          <button v-if="!readOnlyMode" type="button" class="cancel" @click="cancelPendingLink" :disabled="!pendingLink">
-            取消连线
-          </button>
-          <button v-if="!readOnlyMode" type="button" class="cancel" @click="removeWorkflow">删除</button>
-          <button v-if="!readOnlyMode" type="button" class="send" @click="saveWorkflow">保存</button>
-          <button v-if="!readOnlyMode" type="button" class="test-btn" @click="openAgentTester" :disabled="!workflow.startNodeId">
-            测试
-          </button>
-          <button v-if="!readOnlyMode" type="button" class="publish-btn" @click="handlePublishAgent" :disabled="publishing || !workflow.startNodeId">
-            {{ publishing ? '发布中...' : '发布' }}
-          </button>
+        <div class="workflow-studio__actions">
+          <div class="workflow-studio__actions-secondary">
+            <button type="button" class="cancel" @click="toggleInspector">
+              {{ inspectorCollapsed ? '展开属性面板' : '收起属性面板' }}
+            </button>
+            <button v-if="!readOnlyMode" type="button" class="cancel" @click="cancelPendingLink" :disabled="!pendingLink">
+              取消连线
+            </button>
+            <button v-if="!readOnlyMode" type="button" class="cancel" @click="removeWorkflow">删除</button>
+          </div>
+
+          <div class="workflow-studio__actions-primary">
+            <button v-if="!readOnlyMode" type="button" class="send" @click="saveWorkflow">保存</button>
+            <button v-if="!readOnlyMode" type="button" class="test-btn" @click="openAgentTester" :disabled="!workflow.startNodeId">
+              测试
+            </button>
+            <button v-if="!readOnlyMode" type="button" class="publish-btn" @click="handlePublishAgent" :disabled="publishing || !workflow.startNodeId">
+              {{ publishing ? '发布中...' : '发布' }}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1684,8 +1721,8 @@ onBeforeUnmount(() => {
         <p>{{ pageError }}</p>
       </section>
 
-      <section class="workflow-body" :class="{ 'inspector-collapsed': inspectorCollapsed }">
-        <div class="workflow-canvas" ref="workflowCanvasRef" @click="selectedNodeId = ''; selectedEdgeIndex = null">
+      <section class="workflow-body workflow-studio__body" :class="{ 'inspector-collapsed': inspectorCollapsed }">
+        <div class="workflow-canvas workflow-studio__canvas" ref="workflowCanvasRef" @click="selectedNodeId = ''; selectedEdgeIndex = null">
           <svg class="workflow-edges" :width="4200" :height="4200">
             <template v-for="(edge, edgeIndex) in workflow.edges" :key="`${edge.from}->${edge.to}-${edge.label || ''}-${edgeIndex}`">
               <path :d="edgePath(edge)" class="workflow-edge-hit" @click.stop="selectEdge(edgeIndex)" />
@@ -1857,12 +1894,15 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <aside class="workflow-inspector" v-show="!inspectorCollapsed">
+        <aside class="workflow-inspector workflow-studio__inspector" v-show="!inspectorCollapsed">
           <div class="workflow-inspector-header">
-            <strong>属性面板</strong>
+            <div class="workflow-studio__inspector-title">
+              <p class="workflow-studio__eyebrow">Inspector</p>
+              <strong>属性面板</strong>
+            </div>
           </div>
 
-          <div v-if="!readOnlyMode" class="workflow-inspector-actions">
+          <div v-if="!readOnlyMode" class="workflow-inspector-actions workflow-studio__inspector-actions">
             <button type="button" class="cancel" @click="addNode('start')">新增开始节点</button>
             <button type="button" class="cancel" @click="addNode('end')">新增结束节点</button>
             <button type="button" class="cancel" @click="addNode('chat_model')">新增ChatModel节点</button>
@@ -2233,10 +2273,12 @@ onBeforeUnmount(() => {
           </div>
         </aside>
       </section>
-    </main>
+      </main>
+    </ModuleSectionCard>
 
-    <main class="chat-panel workflow-panel" v-else>
-      <header class="toolbar">
+    <ModuleSectionCard class="workflow-main-frame" v-else>
+      <main class="chat-panel workflow-panel workflow-studio__panel">
+      <header class="toolbar workflow-studio__empty-toolbar">
         <strong>未选择工作流</strong>
       </header>
       <section class="agent-tip" v-if="pageError">
@@ -2245,7 +2287,9 @@ onBeforeUnmount(() => {
       <section class="agent-tip">
         <p>请从左侧选择一个工作流，或新建一个。</p>
       </section>
-    </main>
+      </main>
+    </ModuleSectionCard>
+    </div>
 
     <!-- 助手测试模态框 -->
     <div v-if="showAgentTester && !readOnlyMode" class="modal-overlay" @click.self="closeAgentTester">
@@ -2300,9 +2344,174 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </div>
+  </PageContainer>
 </template>
 
 <style scoped>
+.workflow-studio {
+  gap: 14px;
+}
+
+.workflow-studio__layout {
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.workflow-sidebar-frame,
+.workflow-main-frame {
+  padding: 0;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+.workflow-studio__sidebar {
+  gap: 14px;
+}
+
+.workflow-studio__sidebar-brand {
+  gap: 6px;
+}
+
+.workflow-studio__sidebar-tip,
+.workflow-studio__workflow-subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.workflow-studio__sidebar-actions {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.workflow-studio__sidebar-actions .new-chat,
+.workflow-studio__sidebar-actions .cancel {
+  width: 100%;
+}
+
+.workflow-studio__workflow-list {
+  gap: 10px;
+}
+
+.workflow-studio__workflow-item {
+  padding: 12px;
+  border-radius: 16px;
+}
+
+.workflow-studio__workflow-item.active {
+  border-color: #b9c6d8;
+  background: linear-gradient(132deg, rgba(204, 232, 220, 0.38), rgba(226, 216, 246, 0.26));
+}
+
+.workflow-studio__panel {
+  padding: 16px;
+  gap: 12px;
+}
+
+.workflow-studio__topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 10% 12%, rgba(182, 225, 207, 0.14), transparent 30%),
+    radial-gradient(circle at 92% 14%, rgba(220, 203, 244, 0.14), transparent 32%),
+    rgba(255, 255, 255, 0.84);
+  padding: 16px 18px;
+}
+
+.workflow-studio__info-card,
+.workflow-studio__inspector-title {
+  display: grid;
+  gap: 6px;
+}
+
+.workflow-studio__eyebrow {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #5f8a78;
+  font-weight: 700;
+}
+
+.workflow-studio__info-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.workflow-studio__info-title strong {
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+}
+
+.workflow-studio__info-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.workflow-studio__actions {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.workflow-studio__actions-secondary,
+.workflow-studio__actions-primary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.workflow-studio__body {
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 14px;
+}
+
+.workflow-studio__body.inspector-collapsed {
+  grid-template-columns: 1fr;
+}
+
+.workflow-studio__canvas {
+  min-height: 640px;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(250, 251, 252, 0.94)),
+    #fff;
+}
+
+.workflow-studio__inspector {
+  border-radius: 18px;
+}
+
+.workflow-studio__inspector-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.workflow-studio__inspector-actions .cancel {
+  width: 100%;
+}
+
+.workflow-studio__empty-toolbar {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.84);
+  padding: 14px 16px;
+}
+
 .modal-overlay {
   position: fixed;
   top: 0;
@@ -2530,5 +2739,29 @@ onBeforeUnmount(() => {
 
 .modal-close button:hover {
   background: #f5f7f9;
+}
+
+@media (max-width: 1280px) {
+  .workflow-studio__topbar,
+  .workflow-studio__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-studio__actions {
+    justify-items: stretch;
+  }
+
+  .workflow-studio__actions-secondary,
+  .workflow-studio__actions-primary {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 960px) {
+  .workflow-studio__body,
+  .workflow-studio__body.inspector-collapsed,
+  .workflow-studio__inspector-actions {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

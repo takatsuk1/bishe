@@ -63,7 +63,7 @@ openai_connector:
     - name: careerradar
       server_url: http://127.0.0.1:9997
     - name: host
-      server_url: http://127.0.0.1:8080
+      server_url: http://localhost:8080
     # - name: knowledgeChat
     #   server_url: http://127.0.0.1:9995
 

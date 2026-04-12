@@ -46,9 +46,9 @@ type InterviewState struct {
 	Scores                       []InterviewScore
 }
 
-var interviewNodeProgressText = map[string]string{
-	"start": "Initialize interview simulation", "analyze": "Analyze resume profile", "plan": "Plan interview questions",
-	"score": "Score answer", "followup": "Generate adaptive follow-up", "question": "Ask next question", "end": "Return result",
+var interviewNodeTypeText = map[string]string{
+	"start": "start", "analyze": "chat_model", "plan": "chat_model",
+	"score": "chat_model", "followup": "chat_model", "question": "chat_model", "end": "end",
 }
 
 func NewAgent() (*Agent, error) {
@@ -130,10 +130,15 @@ func (a *Agent) emitInterviewStepEvent(ctx context.Context, manager internaltm.M
 	if manager == nil {
 		return
 	}
-	msg := interviewNodeProgressText[nodeID]
-	if msg == "" {
-		msg = "Execute node " + nodeID
+	nodeName := strings.TrimSpace(nodeID)
+	if nodeName == "" {
+		nodeName = "unknown"
 	}
+	nodeType := strings.TrimSpace(interviewNodeTypeText[nodeName])
+	if nodeType == "" {
+		nodeType = "unknown"
+	}
+	msg := fmt.Sprintf("节点名:%s 节点类型:%s", nodeName, nodeType)
 	ev := internalproto.NewStepEvent("interviewsimulator", "workflow", nodeID, state, msg)
 	txt := msg
 	if t, e := internalproto.EncodeStepToken(ev); e == nil {

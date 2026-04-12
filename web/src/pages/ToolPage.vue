@@ -13,6 +13,10 @@ import {
   type ToolParameter,
 } from '../lib/userAgentApi'
 import { canManageOwnTools, canManageSystemTools, currentPrimaryRole } from '../lib/permission'
+import PageContainer from '../components/PageContainer.vue'
+import PageHeader from '../components/PageHeader.vue'
+import ModuleSectionCard from '../components/ModuleSectionCard.vue'
+import StatCard from '../components/StatCard.vue'
 
 const tools = ref<UserTool[]>([])
 const loading = ref(false)
@@ -27,6 +31,24 @@ const mcpServerRunningByToolId = ref<Record<string, boolean>>({})
 const inlineEditorRef = ref<HTMLElement | null>(null)
 const readOnlyMode = computed(() => !canManageOwnTools() && !canManageSystemTools())
 const roleLabel = computed(() => currentPrimaryRole.value)
+const toolStats = computed(() => [
+  { label: '工具总数', value: String(tools.value.length) },
+  { label: 'HTTP 工具', value: String(tools.value.filter((item) => item.toolType === 'http').length) },
+  { label: 'MCP 工具', value: String(tools.value.filter((item) => item.toolType === 'mcp').length) },
+])
+
+function baseInfoLines(tool: UserTool): string[] {
+  const lines: string[] = []
+  if (tool.toolType === 'http' && tool.config) {
+    lines.push(`${String((tool.config as any).method || 'GET').toUpperCase()} · ${String((tool.config as any).url || 'URL 未配置')}`)
+  }
+  if (tool.toolType === 'mcp' && tool.config) {
+    const mode = String((tool.config as any).mcp_mode || 'url')
+    lines.push(mode === 'stdio' ? `STDIO · ${mcpServerURL(tool) || '未配置'}` : `URL · ${String((tool.config as any).server_url || '未配置')}`)
+  }
+  lines.push(`参数数量 · ${tool.parameters?.length || 0}`)
+  return lines
+}
 
 function isSystemTool(tool: UserTool): boolean {
   return String(tool.userId || '').trim().toLowerCase() === 'system'
@@ -426,41 +448,74 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="tool-page">
-    <div class="header">
-      <h1>工具管理</h1>
-      <button v-if="!readOnlyMode" type="button" class="btn-primary" @click="openCreateModal">+ 创建工具</button>
-    </div>
+  <PageContainer mode="wide">
+  <div class="module-page module-page--tool tool-page tool-hub">
+    <PageHeader eyebrow="TOOL HUB" title="工具管理" description="统一查看工具定义、参数与 MCP 运行状态。">
+      <template #actions>
+        <button v-if="!readOnlyMode" type="button" class="btn-primary" @click="openCreateModal">+ 创建工具</button>
+      </template>
+    </PageHeader>
     <p v-if="readOnlyMode" class="hint">当前角色 {{ roleLabel }}：只读模式</p>
+
+    <section class="tool-overview-grid tool-hub__overview-grid">
+      <StatCard v-for="item in toolStats" :key="item.label" :label="item.label" :value="item.value" />
+    </section>
 
     <div v-if="error" class="error">{{ error }}</div>
 
     <div v-if="loading" class="loading">加载中...</div>
 
-    <div v-else class="tool-list">
+    <ModuleSectionCard v-else title="工具列表" description="当前账号可见的工具资源中心。">
+      <div class="tool-list tool-hub__grid">
       <div v-if="tools.length === 0" class="empty">
         暂无工具，点击"创建工具"添加新工具
       </div>
 
-      <div v-for="tool in tools" :key="tool.toolId" class="tool-card">
-        <div class="tool-header">
-          <span class="tool-type-badge" :class="tool.toolType">{{ tool.toolType.toUpperCase() }}</span>
-          <span v-if="isSystemTool(tool)" class="tool-owner-badge">SYSTEM</span>
-          <h3>{{ tool.name }}</h3>
+      <div v-for="tool in tools" :key="tool.toolId" class="tool-card tool-hub__card">
+        <div class="tool-header tool-hub__card-header">
+          <div class="tool-hub__title-wrap">
+            <div class="tool-hub__badge-row">
+              <span class="tool-type-badge" :class="tool.toolType">{{ tool.toolType.toUpperCase() }}</span>
+              <span v-if="isSystemTool(tool)" class="tool-owner-badge">SYSTEM</span>
+            </div>
+            <h3>{{ tool.name }}</h3>
+          </div>
+          <div class="tool-actions tool-hub__actions">
+            <button
+              v-if="canManageTool(tool) && tool.toolType === 'mcp' && ((tool.config as any).mcp_mode || 'url') === 'stdio'"
+              v-show="!mcpServerRunningByToolId[tool.toolId]"
+              type="button"
+              class="btn-secondary"
+              @click="handleStartMCP(tool)"
+            >
+              启动
+            </button>
+            <button
+              v-if="canManageTool(tool) && tool.toolType === 'mcp' && ((tool.config as any).mcp_mode || 'url') === 'stdio'"
+              v-show="mcpServerRunningByToolId[tool.toolId]"
+              type="button"
+              class="btn-secondary"
+              @click="handleStopMCP(tool)"
+            >
+              停止
+            </button>
+            <button v-if="canManageTool(tool)" type="button" class="btn-secondary" @click="openEditModal(tool)">编辑</button>
+            <button v-if="canManageTool(tool)" type="button" class="btn-danger" @click="handleDelete(tool.toolId)">删除</button>
+          </div>
         </div>
-        <p class="tool-description">{{ tool.description || '暂无描述' }}</p>
-        <div class="tool-info">
-          <span v-if="tool.toolType === 'http' && tool.config">
-            {{ (tool.config as any).method }} {{ (tool.config as any).url }}
-          </span>
-          <span v-if="tool.toolType === 'mcp' && tool.config">
-            {{ ((tool.config as any).mcp_mode || 'url') === 'stdio' ? `STDIO: ${mcpServerURL(tool) || '未配置'}` : ((tool.config as any).server_url || 'URL 未配置') }}
-          </span>
-          <span v-if="tool.parameters?.length">
-            参数: {{ tool.parameters.length }} 个
-          </span>
+
+        <div class="tool-hub__section tool-hub__section--description">
+          <p class="tool-description">{{ tool.description || '暂无描述' }}</p>
         </div>
-        <div v-if="tool.toolType === 'mcp'" class="mcp-tool-list">
+
+        <div class="tool-hub__section tool-hub__section--info">
+          <div class="tool-info tool-hub__info-list">
+            <span v-for="line in baseInfoLines(tool)" :key="line">{{ line }}</span>
+          </div>
+        </div>
+
+        <div class="tool-hub__section tool-hub__section--tags">
+          <div v-if="tool.toolType === 'mcp'" class="mcp-tool-list">
           <div class="mcp-tool-list-title">MCP 支持工具</div>
           <div v-if="mcpToolsLoadingByToolId[tool.toolId]" class="mcp-tool-list-hint">正在加载...</div>
           <div v-else-if="mcpToolsErrorByToolId[tool.toolId]" class="mcp-tool-list-error">
@@ -479,31 +534,15 @@ onMounted(() => {
               {{ mcpTool.name }}
             </span>
           </div>
-        </div>
-        <div class="tool-actions">
-          <button
-            v-if="canManageTool(tool) && tool.toolType === 'mcp' && ((tool.config as any).mcp_mode || 'url') === 'stdio'"
-            v-show="!mcpServerRunningByToolId[tool.toolId]"
-            type="button"
-            class="btn-secondary"
-            @click="handleStartMCP(tool)"
-          >
-            启动
-          </button>
-          <button
-            v-if="canManageTool(tool) && tool.toolType === 'mcp' && ((tool.config as any).mcp_mode || 'url') === 'stdio'"
-            v-show="mcpServerRunningByToolId[tool.toolId]"
-            type="button"
-            class="btn-secondary"
-            @click="handleStopMCP(tool)"
-          >
-            停止
-          </button>
-          <button v-if="canManageTool(tool)" type="button" class="btn-secondary" @click="openEditModal(tool)">编辑</button>
-          <button v-if="canManageTool(tool)" type="button" class="btn-danger" @click="handleDelete(tool.toolId)">删除</button>
+          </div>
+          <div v-else class="mcp-tool-tags">
+            <span class="mcp-tool-tag">HTTP 接口</span>
+            <span class="mcp-tool-tag">请求工具</span>
+          </div>
         </div>
       </div>
-    </div>
+      </div>
+    </ModuleSectionCard>
 
     <div v-if="showModal" ref="inlineEditorRef" class="inline-editor">
       <div class="modal">
@@ -654,17 +693,27 @@ onMounted(() => {
       </div>
     </div>
   </div>
+  </PageContainer>
 </template>
 
 <style scoped>
 .tool-page {
-  width: min(1320px, 100% - 28px);
-  margin: 18px auto;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  background: var(--bg-panel);
-  box-shadow: var(--shadow-soft);
+  width: 100%;
+  margin: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.tool-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tool-hub__overview-grid :deep(.stat-card) {
+  min-height: 116px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 249, 251, 0.92));
 }
 
 .header {
@@ -760,17 +809,23 @@ onMounted(() => {
 
 .tool-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
 }
 
 .tool-card {
-  background: #fff;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.84)),
+    var(--bg-panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 16px;
+  border-radius: 20px;
+  padding: 18px;
   box-shadow: var(--shadow-soft);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
+  display: grid;
+  grid-template-rows: auto 72px 88px auto;
+  gap: 14px;
+  min-height: 420px;
 }
 
 .tool-card:hover {
@@ -780,9 +835,22 @@ onMounted(() => {
 
 .tool-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.tool-hub__title-wrap {
+  display: grid;
   gap: 10px;
-  margin-bottom: 8px;
+  min-width: 0;
+}
+
+.tool-hub__badge-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .tool-type-badge {
@@ -809,6 +877,7 @@ onMounted(() => {
 .tool-header h3 {
   margin: 0;
   font-size: 18px;
+  line-height: 1.25;
 }
 
 .tool-owner-badge {
@@ -823,27 +892,52 @@ onMounted(() => {
 
 .tool-description {
   color: var(--text-muted);
-  margin: 8px 0;
   font-size: 14px;
+  line-height: 1.7;
+  margin: 0;
 }
 
 .tool-info {
   font-size: 12px;
   color: var(--text-muted);
-  margin-bottom: 12px;
 }
 
-.tool-info span {
-  margin-right: 16px;
+.tool-hub__info-list {
+  display: grid;
+  gap: 8px;
+}
+
+.tool-hub__info-list span {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(221, 225, 230, 0.94);
+  background: rgba(255, 255, 255, 0.72);
+  margin: 0;
 }
 
 .tool-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.tool-hub__section {
+  min-height: 0;
+}
+
+.tool-hub__section--tags {
+  display: flex;
+  align-items: flex-end;
 }
 
 .mcp-tool-list {
-  margin-bottom: 12px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
 }
 
 .mcp-tool-list-title {
@@ -873,7 +967,7 @@ onMounted(() => {
   line-height: 1;
   padding: 6px 8px;
   border-radius: 999px;
-  background: #f2f6ff;
+  background: linear-gradient(120deg, rgba(204, 232, 220, 0.38), rgba(226, 216, 246, 0.32));
   border: 1px solid #d6e0fb;
   color: #2f4b86;
 }
@@ -1022,18 +1116,36 @@ onMounted(() => {
 }
 
 @media (max-width: 960px) {
-  .tool-page {
-    width: min(1320px, 100% - 20px);
-    padding: 14px;
-  }
-
   .header {
     flex-direction: column;
     align-items: flex-start;
   }
 
   .tool-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tool-overview-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .tool-list {
+    grid-template-columns: 1fr;
+  }
+
+  .tool-card {
+    grid-template-rows: auto auto auto auto;
+    min-height: auto;
+  }
+
+  .tool-header {
+    flex-direction: column;
+  }
+
+  .tool-actions {
+    justify-content: flex-start;
   }
 }
 </style>

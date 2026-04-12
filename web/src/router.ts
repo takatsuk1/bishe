@@ -1,16 +1,23 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
-import ChatPage from './pages/ChatPage.vue'
-import WorkflowPage from './pages/WorkflowPage.vue'
-import ToolPage from './pages/ToolPage.vue'
-import MonitorPage from './pages/MonitorPage.vue'
+import PublicLayout from './layouts/PublicLayout.vue'
+import WorkspaceLayout from './layouts/WorkspaceLayout.vue'
+import HomePage from './pages/HomePage.vue'
+import PlatformCapabilitiesPage from './pages/PlatformCapabilitiesPage.vue'
 import LoginPage from './pages/LoginPage.vue'
-import RegisterPage from './pages/RegisterPage.vue'
+import WorkspaceHomePage from './pages/WorkspaceHomePage.vue'
+import ChatPage from './pages/ChatPage.vue'
+import AssistantsCenterPage from './pages/AssistantsCenterPage.vue'
+import WorkflowPage from './pages/WorkflowPage.vue'
+import MonitorPage from './pages/MonitorPage.vue'
+import ToolPage from './pages/ToolPage.vue'
 import ProfilePage from './pages/ProfilePage.vue'
 import AdminUsersPage from './pages/AdminUsersPage.vue'
 import { me } from './lib/authApi'
 import { hasPermission, type AppPermission } from './lib/permission'
 import { currentUser, initAuthState, isAuthenticated, updateCurrentUser } from './lib/authStore'
+import { setGlobalSelectedAgent } from './lib/agentSelection'
+import type { AgentModel } from './types/chat'
 
 let profileLoadedOnce = false
 
@@ -31,29 +38,72 @@ async function ensureProfileLoaded(): Promise<void> {
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', name: 'chat', component: ChatPage },
-    { path: '/workflow', name: 'workflow', component: WorkflowPage },
-    { path: '/monitor', name: 'monitor', component: MonitorPage },
-    { path: '/tools', name: 'tools', component: ToolPage },
-    { path: '/profile', name: 'profile', component: ProfilePage },
     {
-      path: '/admin/users',
-      name: 'admin-users',
-      component: AdminUsersPage,
-      meta: {
-        requiredPermission: 'user.manage.all',
-      },
+      path: '/',
+      component: PublicLayout,
+      meta: { public: true, zone: 'public' },
+      children: [
+        { path: '', name: 'public-home', component: HomePage },
+        { path: 'capabilities', name: 'public-capabilities', component: PlatformCapabilitiesPage },
+        { path: 'login', name: 'public-login', component: LoginPage },
+      ],
     },
-    { path: '/login', name: 'login', component: LoginPage, meta: { public: true } },
-    { path: '/register', name: 'register', component: RegisterPage, meta: { public: true } },
+    {
+      path: '/workspace',
+      component: WorkspaceLayout,
+      meta: { zone: 'workspace' },
+      children: [
+        { path: '', name: 'workspace-home', component: WorkspaceHomePage },
+        { path: 'dialogue', name: 'workspace-dialogue', component: ChatPage },
+        { path: 'assistants', name: 'workspace-assistants', component: AssistantsCenterPage },
+        {
+          path: 'assistants/:agentId',
+          name: 'workspace-assistant-entry',
+          redirect: (to) => {
+            const agentId = String(to.params.agentId || '').trim()
+            if (agentId) {
+              setGlobalSelectedAgent(agentId as AgentModel)
+            }
+            return '/workspace/dialogue'
+          },
+        },
+        { path: 'orchestration', name: 'workspace-orchestration', component: WorkflowPage },
+        { path: 'monitoring', name: 'workspace-monitoring', component: MonitorPage },
+        { path: 'tools', name: 'workspace-tools', component: ToolPage },
+        { path: 'account', name: 'workspace-account', component: ProfilePage },
+        {
+          path: 'admin/users',
+          name: 'workspace-admin-users',
+          component: AdminUsersPage,
+          meta: { requiredPermission: 'user.manage.all' },
+        },
+      ],
+    },
+    { path: '/dialogue', redirect: '/workspace/dialogue' },
+    { path: '/assistants', redirect: '/workspace/assistants' },
+    {
+      path: '/assistants/:agentId',
+      redirect: (to) => `/workspace/assistants/${encodeURIComponent(String(to.params.agentId || ''))}`,
+    },
+    { path: '/orchestration', redirect: '/workspace/orchestration' },
+    { path: '/monitoring', redirect: '/workspace/monitoring' },
+    { path: '/tools', redirect: '/workspace/tools' },
+    { path: '/account', redirect: '/workspace/account' },
+    { path: '/admin/users', redirect: '/workspace/admin/users' },
+    { path: '/workflow', redirect: '/workspace/orchestration' },
+    { path: '/monitor', redirect: '/workspace/monitoring' },
+    { path: '/profile', redirect: '/workspace/account' },
+    { path: '/register', redirect: '/login' },
   ],
 })
 
 router.beforeEach(async (to) => {
   initAuthState()
-  if (to.meta.public) {
-    if (isAuthenticated.value && (to.path === '/login' || to.path === '/register')) {
-      return '/'
+  const isPublicRoute = to.matched.some((record) => record.meta.public === true)
+
+  if (isPublicRoute) {
+    if (isAuthenticated.value && to.name === 'public-login') {
+      return '/workspace'
     }
     return true
   }
@@ -77,7 +127,7 @@ router.beforeEach(async (to) => {
   const requiredPermission = String(to.meta.requiredPermission || '').trim() as AppPermission | ''
   if (requiredPermission && !hasPermission(requiredPermission)) {
     return {
-      path: '/profile',
+      path: '/workspace/account',
       query: {
         denied: '1',
         from: to.fullPath,

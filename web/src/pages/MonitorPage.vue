@@ -15,6 +15,9 @@ import { currentUser } from '../lib/authStore'
 import { canManageMonitorAlerts, canReadAllMonitor, currentPrimaryRole } from '../lib/permission'
 import type { MonitorAlert, MonitorEvent, MonitorRun, MonitorRunDetail } from '../types/monitor'
 import type { EdgeDefinition, NodeDefinition, WorkflowDefinition } from '../types/workflow'
+import PageContainer from '../components/PageContainer.vue'
+import PageHeader from '../components/PageHeader.vue'
+import StatCard from '../components/StatCard.vue'
 
 type RuntimeStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'timeout' | 'retrying' | 'skipped'
 type PanelTab = 'node' | 'events' | 'alerts'
@@ -130,6 +133,10 @@ const visibleRuns = computed(() => {
 const canSwitchAllScope = computed(() => canReadAllMonitor())
 const canOperateAlerts = computed(() => canManageMonitorAlerts())
 const roleLabel = computed(() => currentPrimaryRole.value)
+const selectedRunStatusText = computed(() => {
+  const status = String(currentRunDetail.value?.run.status || '').trim()
+  return status || 'pending'
+})
 
 const currentWorkflowDef = computed(() => {
   const runId = currentRunId.value
@@ -914,15 +921,24 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="layout monitor-layout">
-    <aside class="sidebar monitor-sidebar">
-      <div class="brand">
-        <p class="eyebrow">monitor center</p>
-        <h1>监控中心</h1>
+  <PageContainer mode="fluid">
+  <div class="module-page module-page--monitor runtime-monitor">
+    <PageHeader
+      eyebrow="MONITOR CENTER"
+      title="监控中心"
+      description="查看工作流运行、节点状态、事件时间线与告警处置。"
+    />
+
+    <div class="layout monitor-layout workspace-layout runtime-monitor__layout">
+    <aside class="sidebar monitor-sidebar runtime-monitor__sidebar">
+      <div class="brand runtime-monitor__sidebar-brand">
+        <p class="eyebrow">runtime monitor</p>
+        <h1>运行记录</h1>
+        <p class="runtime-monitor__sidebar-tip">按运行实例查看状态、链路和告警。</p>
       </div>
 
       <p class="task-text" v-if="!canSwitchAllScope">当前角色 {{ roleLabel }}：仅个人视图</p>
-      <div class="monitor-scope" v-else>
+      <div class="monitor-scope runtime-monitor__scope" v-else>
         <button type="button" class="cancel" :class="{ active: monitorScope === 'own' }" @click="monitorScope = 'own'">
           仅看我的
         </button>
@@ -931,22 +947,22 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <div class="workflow-sidebar-actions">
+      <div class="workflow-sidebar-actions runtime-monitor__sidebar-actions">
         <button class="new-chat" type="button" :disabled="loading" @click="refreshAll">刷新</button>
       </div>
 
       <p v-if="pageError" class="error">{{ pageError }}</p>
 
-      <ul class="conversation-list monitor-run-list">
+      <ul class="conversation-list monitor-run-list runtime-monitor__run-list">
         <li
           v-for="run in visibleRuns"
           :key="run.runId"
-          :class="['conversation-item', { active: run.runId === selectedRunId }]"
+          :class="['conversation-item runtime-monitor__run-item', { active: run.runId === selectedRunId }]"
           @click="selectRun(run.runId)"
         >
           <div class="conversation-meta">
             <p class="conversation-title">{{ run.runId }}</p>
-            <p class="task-text">workflow: {{ run.workflowId }}</p>
+            <p class="runtime-monitor__run-subtitle">{{ run.workflowId }}</p>
             <p class="task-text">开始：{{ formatDate(run.startedAt) }}</p>
             <p class="task-text">耗时：{{ formatDuration(run.durationMs) }}</p>
             <div class="run-list-foot">
@@ -957,7 +973,7 @@ onBeforeUnmount(() => {
         </li>
       </ul>
 
-      <div class="monitor-pager">
+      <div class="monitor-pager runtime-monitor__pager">
         <button class="cancel" type="button" :disabled="runPage <= 1 || loading" @click="changeRunPage(runPage - 1)">
           上一页
         </button>
@@ -973,49 +989,34 @@ onBeforeUnmount(() => {
       </div>
     </aside>
 
-    <main class="chat-panel workflow-panel monitor-main">
-      <section class="monitor-overview-grid">
-        <article class="monitor-card">
-          <p class="task-text">总运行次数</p>
-          <strong>{{ overview.totalRuns }}</strong>
-        </article>
-        <article class="monitor-card">
-          <p class="task-text">成功次数</p>
-          <strong>{{ overview.succeededRuns }}</strong>
-        </article>
-        <article class="monitor-card">
-          <p class="task-text">失败次数</p>
-          <strong>{{ overview.failedRuns }}</strong>
-        </article>
-        <article class="monitor-card">
-          <p class="task-text">成功率</p>
-          <strong>{{ (overview.successRate * 100).toFixed(1) }}%</strong>
-        </article>
-        <article class="monitor-card">
-          <p class="task-text">平均耗时</p>
-          <strong>{{ formatDuration(overview.averageDurationMs) }}</strong>
-        </article>
-        <article class="monitor-card">
-          <p class="task-text">告警总数</p>
-          <strong>{{ overview.alertTotal }}</strong>
-        </article>
+    <main class="chat-panel workflow-panel monitor-main module-section runtime-monitor__main">
+      <section class="monitor-overview-grid runtime-monitor__overview-grid">
+        <StatCard label="总运行次数" :value="String(overview.totalRuns)" />
+        <StatCard label="成功次数" :value="String(overview.succeededRuns)" />
+        <StatCard label="失败次数" :value="String(overview.failedRuns)" />
+        <StatCard label="成功率" :value="`${(overview.successRate * 100).toFixed(1)}%`" />
+        <StatCard label="平均耗时" :value="formatDuration(overview.averageDurationMs)" />
+        <StatCard label="告警总数" :value="String(overview.alertTotal)" />
       </section>
 
-      <header class="toolbar monitor-toolbar">
-        <div class="workflow-title">
-          <strong>{{ currentRunDetail?.run.runId || '未选择运行记录' }}</strong>
-          <span class="task-text">workflow: {{ currentRunDetail?.run.workflowId || '-' }}</span>
-          <span class="task-text">开始时间: {{ formatDate(currentRunDetail?.run.startedAt) }}</span>
-        </div>
-        <div class="workflow-buttons">
-          <span v-if="currentRunDetail" :class="['chip', runStatusClass(currentRunDetail.run.status)]">
-            {{ currentRunDetail.run.status }}
-          </span>
-          <span class="task-text">总耗时: {{ formatDuration(currentRunDetail?.run.durationMs || 0) }}</span>
+      <header class="toolbar monitor-toolbar runtime-monitor__topbar">
+        <div class="runtime-monitor__run-info">
+          <p class="runtime-monitor__eyebrow">Current Run</p>
+          <div class="runtime-monitor__run-title">
+            <strong>{{ currentRunDetail?.run.runId || '未选择运行记录' }}</strong>
+            <span v-if="currentRunDetail" :class="['chip', runStatusClass(currentRunDetail.run.status)]">
+              {{ selectedRunStatusText }}
+            </span>
+          </div>
+          <div class="runtime-monitor__run-meta">
+            <span class="task-text">workflow: {{ currentRunDetail?.run.workflowId || '-' }}</span>
+            <span class="task-text">开始时间: {{ formatDate(currentRunDetail?.run.startedAt) }}</span>
+            <span class="task-text">总耗时: {{ formatDuration(currentRunDetail?.run.durationMs || 0) }}</span>
+          </div>
         </div>
       </header>
 
-      <section class="monitor-chain" v-if="runFamily.length > 0">
+      <section class="monitor-chain runtime-monitor__chain" v-if="runFamily.length > 0">
         <span class="task-text">执行链路：</span>
         <button
           v-for="run in runFamily"
@@ -1029,8 +1030,8 @@ onBeforeUnmount(() => {
         </button>
       </section>
 
-      <section class="workflow-body monitor-body">
-        <div class="workflow-canvas" v-if="selectedRunId">
+      <section class="workflow-body monitor-body runtime-monitor__body">
+        <div class="workflow-canvas runtime-monitor__canvas" v-if="selectedRunId">
           <svg class="workflow-edges" :width="4200" :height="4200" v-if="currentWorkflowDef">
             <template v-for="(edge, edgeIndex) in currentWorkflowDef.edges" :key="`${edge.from}-${edge.to}-${edge.label || ''}-${edgeIndex}`">
               <path :d="edgePath(edge)" class="workflow-edge" />
@@ -1070,8 +1071,15 @@ onBeforeUnmount(() => {
           </section>
         </div>
 
-        <aside class="workflow-inspector monitor-inspector" v-if="selectedRunId">
-          <div class="monitor-tabs">
+        <aside class="workflow-inspector monitor-inspector runtime-monitor__inspector" v-if="selectedRunId">
+          <div class="runtime-monitor__inspector-head">
+            <div class="runtime-monitor__inspector-title">
+              <p class="runtime-monitor__eyebrow">Details Panel</p>
+              <strong>运行详情</strong>
+            </div>
+          </div>
+
+          <div class="monitor-tabs runtime-monitor__tabs">
             <button type="button" class="cancel" :class="{ active: activeTab === 'node' }" @click="activeTab = 'node'">节点详情</button>
             <button type="button" class="cancel" :class="{ active: activeTab === 'events' }" @click="activeTab = 'events'">事件时间线</button>
             <button type="button" class="cancel" :class="{ active: activeTab === 'alerts' }" @click="activeTab = 'alerts'">告警列表</button>
@@ -1163,21 +1171,63 @@ onBeforeUnmount(() => {
         </section>
       </section>
     </main>
+    </div>
   </div>
+  </PageContainer>
 </template>
 
 <style scoped>
+.module-page {
+  display: grid;
+  gap: 12px;
+}
+
+.runtime-monitor {
+  gap: 14px;
+}
+
 .monitor-layout {
-  grid-template-columns: 360px minmax(0, 1fr);
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 16px;
 }
 
 .monitor-sidebar {
   overflow: hidden;
 }
 
+.runtime-monitor__sidebar {
+  gap: 14px;
+}
+
+.runtime-monitor__sidebar-brand {
+  gap: 6px;
+}
+
+.runtime-monitor__sidebar-tip,
+.runtime-monitor__run-subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .monitor-run-list {
   min-height: 0;
   flex: 1 1 auto;
+}
+
+.runtime-monitor__run-list {
+  gap: 10px;
+}
+
+.runtime-monitor__run-item {
+  padding: 12px;
+  border-radius: 16px;
+}
+
+.runtime-monitor__run-item.active {
+  border-color: #b9c6d8;
+  background: linear-gradient(132deg, rgba(204, 232, 220, 0.38), rgba(226, 216, 246, 0.26));
 }
 
 .run-list-foot {
@@ -1196,6 +1246,62 @@ onBeforeUnmount(() => {
 
 .monitor-main {
   gap: 12px;
+  padding: 16px;
+}
+
+.runtime-monitor__overview-grid {
+  gap: 12px;
+}
+
+.runtime-monitor__overview-grid :deep(.stat-card) {
+  border-radius: 16px;
+  min-height: 116px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 249, 251, 0.92));
+}
+
+.runtime-monitor__topbar {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 10% 12%, rgba(182, 225, 207, 0.14), transparent 30%),
+    radial-gradient(circle at 92% 14%, rgba(220, 203, 244, 0.14), transparent 32%),
+    rgba(255, 255, 255, 0.84);
+  padding: 16px 18px;
+}
+
+.runtime-monitor__run-info,
+.runtime-monitor__inspector-title {
+  display: grid;
+  gap: 6px;
+}
+
+.runtime-monitor__eyebrow {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #5f8a78;
+  font-weight: 700;
+}
+
+.runtime-monitor__run-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.runtime-monitor__run-title strong {
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+}
+
+.runtime-monitor__run-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .monitor-chain {
@@ -1204,6 +1310,13 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 0 2px;
+}
+
+.runtime-monitor__chain {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 12px 14px;
 }
 
 .monitor-chain .cancel.active {
@@ -1230,18 +1343,24 @@ onBeforeUnmount(() => {
 }
 
 .monitor-body {
-  grid-template-columns: minmax(0, 1fr) 420px;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 14px;
 }
 
 .monitor-inspector {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  border-radius: 18px;
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - 220px);
 }
 
 .monitor-tabs {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .monitor-tabs .cancel.active {
@@ -1253,11 +1372,36 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 8px;
   margin-bottom: 10px;
+  flex-wrap: wrap;
 }
 
 .monitor-scope .cancel.active {
   border-color: #b8c0f0;
   background: #f4f3fe;
+}
+
+.runtime-monitor__sidebar-actions {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.runtime-monitor__sidebar-actions .new-chat {
+  width: 100%;
+}
+
+.runtime-monitor__canvas {
+  min-height: 680px;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(250, 251, 252, 0.94)),
+    #fff;
+}
+
+.runtime-monitor__inspector-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
 }
 
 .monitor-list {
@@ -1272,9 +1416,9 @@ onBeforeUnmount(() => {
 
 .monitor-list-item {
   border: 1px solid var(--line);
-  border-radius: 10px;
-  background: #fff;
-  padding: 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.84);
+  padding: 12px;
 }
 
 .monitor-list-item p {
@@ -1290,7 +1434,11 @@ onBeforeUnmount(() => {
 
 .monitor-detail-grid {
   display: grid;
-  gap: 6px;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 12px;
 }
 
 .monitor-detail-grid p {
@@ -1300,9 +1448,9 @@ onBeforeUnmount(() => {
 
 .monitor-block {
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 14px;
   background: #fbfcfd;
-  padding: 8px;
+  padding: 10px;
 }
 
 .monitor-block pre {
@@ -1378,6 +1526,11 @@ onBeforeUnmount(() => {
   .monitor-body {
     grid-template-columns: 1fr;
   }
+
+  .monitor-inspector {
+    position: static;
+    max-height: none;
+  }
 }
 
 @media (max-width: 980px) {
@@ -1387,6 +1540,12 @@ onBeforeUnmount(() => {
 
   .monitor-overview-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .runtime-monitor__run-meta,
+  .runtime-monitor__run-title {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 </style>

@@ -34,11 +34,11 @@ type workflowNodeWorker struct {
 	agent *Agent
 }
 
-var resumeCustomizerNodeProgressText = map[string]string{
-	"start":   "Initialize resume task",
-	"analyze": "Inspect uploaded file extraction",
-	"tailor":  "Generate tailored resume",
-	"end":     "Return result",
+var resumeCustomizerNodeTypeText = map[string]string{
+	"start":   "start",
+	"analyze": "chat_model",
+	"tailor":  "chat_model",
+	"end":     "end",
 }
 
 func NewAgent() (*Agent, error) {
@@ -194,16 +194,15 @@ func (a *Agent) emitResumeStepEvent(ctx context.Context, manager internaltm.Mana
 	if manager == nil {
 		return
 	}
-	messageZh := resumeCustomizerNodeProgressText[nodeID]
-	if messageZh == "" {
-		messageZh = fmt.Sprintf("Execute node %s", nodeID)
+	nodeName := strings.TrimSpace(nodeID)
+	if nodeName == "" {
+		nodeName = "unknown"
 	}
-	if state == internalproto.StepStateEnd {
-		messageZh = "Done: " + messageZh
+	nodeType := strings.TrimSpace(resumeCustomizerNodeTypeText[nodeName])
+	if nodeType == "" {
+		nodeType = "unknown"
 	}
-	if state == internalproto.StepStateError {
-		messageZh = "Failed: " + messageZh
-	}
+	messageZh := fmt.Sprintf("节点名:%s 节点类型:%s", nodeName, nodeType)
 	ev := internalproto.NewStepEvent("resumecustomizer", "workflow", nodeID, state, messageZh)
 	text := ""
 	if token, tokenErr := internalproto.EncodeStepToken(ev); tokenErr == nil {

@@ -122,7 +122,7 @@ func (t *CallAgentTool) Execute(ctx context.Context, params map[string]any) (map
 		status := event.TaskStatusUpdate.Status
 		current := extractTextFromStatus(status)
 		if cleaned := strings.TrimSpace(agentfmt.Clean(current)); cleaned != "" {
-			lastText = cleaned
+			lastText = mergeStreamText(lastText, cleaned)
 		}
 
 		switch status.State {
@@ -132,6 +132,7 @@ func (t *CallAgentTool) Execute(ctx context.Context, params map[string]any) (map
 			}
 			return map[string]any{
 				"response":   agentfmt.Beautify(agentName, text, lastText),
+				"raw_text":   lastText,
 				"agent_name": agentName,
 				"task_id":    event.TaskStatusUpdate.TaskID,
 			}, nil
@@ -208,6 +209,27 @@ func extractTextFromStatus(status internalproto.TaskStatus) string {
 		}
 	}
 	return ""
+}
+
+func mergeStreamText(accumulated, incoming string) string {
+	accumulated = strings.TrimSpace(accumulated)
+	incoming = strings.TrimSpace(incoming)
+	if incoming == "" {
+		return accumulated
+	}
+	if accumulated == "" {
+		return incoming
+	}
+	// Some agents emit full snapshots, some emit deltas.
+	// Prefer snapshot replacement when incoming already contains all accumulated text.
+	if strings.HasPrefix(incoming, accumulated) {
+		return incoming
+	}
+	// Ignore stale/out-of-order shorter snapshots.
+	if strings.HasPrefix(accumulated, incoming) {
+		return accumulated
+	}
+	return accumulated + incoming
 }
 
 func NewDefaultCallAgentTool() (Tool, error) {

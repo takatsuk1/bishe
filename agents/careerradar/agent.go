@@ -1,4 +1,4 @@
-package careerradar
+﻿package careerradar
 
 import (
 	"ai/config"
@@ -36,12 +36,12 @@ type workflowNodeWorker struct {
 	agent *Agent
 }
 
-var careerRadarNodeProgressText = map[string]string{
-	"start":    "Initialize career radar task",
-	"plan":     "Generate deep research query",
-	"research": "Call deep research agent",
-	"analyze":  "Match jobs and detect risk signals",
-	"end":      "Return result",
+var careerRadarNodeTypeText = map[string]string{
+	"start":    "start",
+	"plan":     "chat_model",
+	"research": "tool",
+	"analyze":  "chat_model",
+	"end":      "end",
 }
 
 func NewAgent() (*Agent, error) {
@@ -158,6 +158,9 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	}
 
 	logger.Infof("[TRACE] careerradar.ProcessInternal start task=%s query_len=%d", taskID, len(query))
+	if manager != nil {
+		a.emitCareerStepEvent(ctx, manager, taskID, "start", internalproto.StepStateStart)
+	}
 	runID, err := a.orchestratorEngine.StartWorkflow(ctx, CareerRadarWorkflowID, map[string]any{
 		"task_id": taskID,
 		"query":   query,
@@ -177,6 +180,7 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 		return fmt.Errorf("failed to wait careerradar workflow: %w", err)
 	}
 	if manager != nil {
+		a.emitCareerStepEvent(ctx, manager, taskID, "start", internalproto.StepStateEnd)
 		for _, nr := range runResult.NodeResults {
 			stepState, ok := careerToTerminalStepState(nr.State)
 			if !ok {
@@ -195,13 +199,19 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	out, _ := runResult.FinalOutput["response"].(string)
 	out = strings.TrimSpace(out)
 	if out == "" {
-		out = "已完成岗位雷达扫描，但暂无可展示结果，请补充更具体岗位要求后重试。"
+		out = "已完成职场雷达扫描，但暂时无可展示结果，请补充更具体岗位要求后重试。"
 	}
+	streamedFinal := careerStreamedToUser(runResult)
 	if manager != nil {
-		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateCompleted, &internalproto.Message{
-			Role:  internalproto.MessageRoleAgent,
-			Parts: []internalproto.Part{internalproto.NewTextPart(out)},
-		})
+		a.emitCareerStepEvent(ctx, manager, taskID, "end", internalproto.StepStateEnd)
+		var doneMsg *internalproto.Message
+		if !streamedFinal {
+			doneMsg = &internalproto.Message{
+				Role:  internalproto.MessageRoleAgent,
+				Parts: []internalproto.Part{internalproto.NewTextPart(out)},
+			}
+		}
+		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateCompleted, doneMsg)
 	}
 	return nil
 }
@@ -210,20 +220,21 @@ func (a *Agent) emitCareerStepEvent(ctx context.Context, manager internaltm.Mana
 	if manager == nil {
 		return
 	}
-	message := careerRadarNodeProgressText[nodeID]
-	if message == "" {
-		message = fmt.Sprintf("Execute node %s", nodeID)
+	nodeName := strings.TrimSpace(nodeID)
+	if nodeName == "" {
+		nodeName = "unknown"
 	}
-	if state == internalproto.StepStateEnd {
-		message = "Done: " + message
+	nodeType := strings.TrimSpace(careerRadarNodeTypeText[nodeName])
+	if nodeType == "" {
+		nodeType = "unknown"
 	}
-	if state == internalproto.StepStateError {
-		message = "Failed: " + message
-	}
+	message := fmt.Sprintf("节点名:%s 节点类型:%s", nodeName, nodeType)
 	ev := internalproto.NewStepEvent("careerradar", "workflow", nodeID, state, message)
-	text := message
+	text := ""
 	if token, tokenErr := internalproto.EncodeStepToken(ev); tokenErr == nil {
-		text = message + "\n" + token
+		text = token
+	} else {
+		text = message
 	}
 	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
 		Role:  internalproto.MessageRoleAgent,
@@ -273,38 +284,7 @@ func (a *Agent) callTool(ctx context.Context, taskID string, nodeID string, payl
 		"user_id":        strings.TrimSpace(fmt.Sprint(payload["user_id"])),
 		"api_key":        strings.TrimSpace(fmt.Sprint(payload["api_key"])),
 	}
-	manager := taskManagerFromContext(ctx)
 	stopHeartbeat := func() {}
-	if manager != nil {
-		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
-			Role:  internalproto.MessageRoleAgent,
-			Parts: []internalproto.Part{internalproto.NewTextPart("正在调用 DeepResearch 检索岗位信息，请稍候...")},
-		})
-		stopCh := make(chan struct{})
-		doneCh := make(chan struct{})
-		go func() {
-			defer close(doneCh)
-			ticker := time.NewTicker(3 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-stopCh:
-					return
-				case <-ticker.C:
-					_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
-						Role:  internalproto.MessageRoleAgent,
-						Parts: []internalproto.Part{internalproto.NewTextPart("DeepResearch 仍在检索中，正在整理岗位和风险信号...")},
-					})
-				}
-			}
-		}()
-		stopHeartbeat = func() {
-			close(stopCh)
-			<-doneCh
-		}
-	}
 	a.emitSemanticStep(ctx, taskID, "careerradar.research.start", internalproto.StepStateInfo, "正在调用 deepresearch 检索岗位信息")
 	out, err := a.callAgentTool.Execute(ctx, params)
 	stopHeartbeat()
@@ -329,34 +309,59 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 	}
 
 	finalPrompt := query
+	researchText := ""
 	switch intent {
 	case "plan_research":
 		finalPrompt = buildResearchPrompt(query)
 	case "summarize_jobs":
-		research := strings.TrimSpace(fmt.Sprint(getNodeField(payload, "research", "response")))
-		finalPrompt = buildSummaryPrompt(query, research)
+		researchText = strings.TrimSpace(fmt.Sprint(getNodeField(payload, "research", "response")))
+		finalPrompt = buildSummaryPrompt(query, researchText)
 	}
 
 	logger.Infof("[TRACE] careerradar.chatmodel start task=%s intent=%s model=%s", taskID, intent, model)
-	a.emitSemanticStep(ctx, taskID, "careerradar.llm.start", internalproto.StepStateInfo, "正在调用大模型："+nodeID)
+	a.emitSemanticStep(ctx, taskID, "careerradar.llm.start", internalproto.StepStateInfo, "姝ｅ湪璋冪敤澶фā鍨嬶細"+nodeID)
 	client := llm.NewClient(baseURL, apiKey)
 	var streamBuf strings.Builder
+	var pending strings.Builder
 	lastEmitAt := time.Time{}
+	streamToUser := strings.EqualFold(intent, "summarize_jobs") || strings.EqualFold(nodeID, "analyze")
+	streamedToUser := false
+	flushToUser := func(force bool) {
+		if !streamToUser || pending.Len() == 0 {
+			return
+		}
+		if !force && pending.Len() < 48 {
+			return
+		}
+		a.emitAssistantDelta(ctx, taskID, pending.String())
+		pending.Reset()
+		streamedToUser = true
+	}
 	resp, err := client.ChatCompletionStream(ctx, model, []llm.Message{{Role: "user", Content: finalPrompt}}, nil, nil, func(delta string) error {
 		if strings.TrimSpace(delta) == "" {
 			return nil
 		}
 		streamBuf.WriteString(delta)
+		if streamToUser {
+			pending.WriteString(delta)
+			flushToUser(false)
+		}
 		if !lastEmitAt.IsZero() && time.Since(lastEmitAt) < 150*time.Millisecond {
 			return nil
 		}
 		lastEmitAt = time.Now()
-		a.emitSemanticStep(ctx, taskID, "careerradar.llm.delta", internalproto.StepStateInfo, "正在调用大模型："+truncateText(streamBuf.String(), 140))
+		a.emitSemanticStep(ctx, taskID, "careerradar.llm.delta", internalproto.StepStateInfo, "姝ｅ湪璋冪敤澶фā鍨嬶細"+truncateText(streamBuf.String(), 140))
 		return nil
 	})
+	if err == nil {
+		flushToUser(true)
+	}
 	if err != nil {
 		if intent == "summarize_jobs" {
-			return map[string]any{"response": fallbackSummary(fmt.Sprint(getNodeField(payload, "research", "response")))}, nil
+			return map[string]any{
+				"response":         fallbackSummary(fmt.Sprint(getNodeField(payload, "research", "response"))),
+				"streamed_to_user": streamedToUser,
+			}, nil
 		}
 		return nil, err
 	}
@@ -368,8 +373,15 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 			resp = query
 		}
 	}
-	a.emitSemanticStep(ctx, taskID, "careerradar.llm.end", internalproto.StepStateEnd, "完成：大模型处理")
-	return map[string]any{"response": resp}, nil
+	if intent == "summarize_jobs" && strings.TrimSpace(researchText) != "" {
+		resp = strings.ReplaceAll(resp, "检索结果为空", "检索结果已返回")
+		resp = strings.ReplaceAll(resp, "DeepResearch 检索结果为空", "DeepResearch 已返回检索结果")
+	}
+	a.emitSemanticStep(ctx, taskID, "careerradar.llm.end", internalproto.StepStateEnd, "瀹屾垚锛氬ぇ妯″瀷澶勭悊")
+	return map[string]any{
+		"response":         resp,
+		"streamed_to_user": streamedToUser,
+	}, nil
 }
 
 func withTaskManager(ctx context.Context, m internaltm.Manager) context.Context {
@@ -411,7 +423,8 @@ func (a *Agent) startProgressReporter(ctx context.Context, taskID string, runID 
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
-		ticker := time.NewTicker(200 * time.Millisecond)
+		// Poll a bit faster to avoid missing very short-lived node transitions.
+		ticker := time.NewTicker(80 * time.Millisecond)
 		defer ticker.Stop()
 		started := map[string]bool{}
 		finished := map[string]bool{}
@@ -465,6 +478,43 @@ func careerToTerminalStepState(state orchestrator.TaskState) (internalproto.Step
 	}
 }
 
+func careerStreamedToUser(runResult orchestrator.RunResult) bool {
+	for _, nr := range runResult.NodeResults {
+		if nr.Output == nil {
+			continue
+		}
+		v, ok := nr.Output["streamed_to_user"]
+		if !ok {
+			continue
+		}
+		switch t := v.(type) {
+		case bool:
+			if t {
+				return true
+			}
+		case string:
+			if strings.EqualFold(strings.TrimSpace(t), "true") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (a *Agent) emitAssistantDelta(ctx context.Context, taskID string, text string) {
+	manager := taskManagerFromContext(ctx)
+	if manager == nil {
+		return
+	}
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
+		Role:  internalproto.MessageRoleAgent,
+		Parts: []internalproto.Part{internalproto.NewTextPart(text)},
+	})
+}
+
 func extractCareerNodeQuery(payload map[string]any) string {
 	for _, key := range []string{"text", "input", "query"} {
 		if v := strings.TrimSpace(fmt.Sprint(payload[key])); v != "" && v != "<nil>" {
@@ -513,16 +563,21 @@ func truncateText(input string, max int) string {
 }
 
 func buildResearchPrompt(query string) string {
-	return "你是职场雷达检索规划助手。用户会给岗位意向，请将其改写成适合 deepresearch agent 的检索任务，要求覆盖：\n" +
-		"1) 匹配岗位样本（公司/城市/级别/技能）\n2) 岗位描述中的高风险信号（加班文化、薪资范围模糊、隐形要求）\n" +
-		"3) 输出中文，尽量具体可检索。\n\n用户输入：\n" + strings.TrimSpace(query)
+	return "浣犳槸鑱屽満闆疯揪妫€绱㈣鍒掑姪鎵嬨€傜敤鎴蜂細缁欏矖浣嶆剰鍚戯紝璇峰皢鍏舵敼鍐欐垚閫傚悎 deepresearch agent 鐨勬绱换鍔★紝瑕佹眰瑕嗙洊锛歕n" +
+		"1) 鍖归厤宀椾綅鏍锋湰锛堝叕鍙?鍩庡競/绾у埆/鎶€鑳斤級\n2) 宀椾綅鎻忚堪涓殑楂橀闄╀俊鍙凤紙鍔犵彮鏂囧寲銆佽柂璧勮寖鍥存ā绯娿€侀殣褰㈣姹傦級\n" +
+		"3) 杈撳嚭涓枃锛屽敖閲忓叿浣撳彲妫€绱€俓n\n鐢ㄦ埛杈撳叆锛歕n" + strings.TrimSpace(query)
 }
 
 func buildSummaryPrompt(userQuery, research string) string {
+	extraRule := ""
+	if strings.TrimSpace(research) != "" {
+		extraRule = "\n重要约束：DeepResearch 已返回检索内容，你不得声称“检索结果为空”或“未获取到结果”。"
+	}
 	return "你是职场雷达分析助手。请基于 deepresearch 返回的信息，输出结构化中文结果：\n" +
 		"## 匹配岗位推荐（3-5个）\n每个岗位给出：岗位名、公司/行业、匹配理由、建议投递优先级。\n" +
-		"## 高风险岗位描述识别\n重点识别并解释：加班文化、薪资描述模糊（如面议/范围极宽/无结构）、职责边界不清、要求不合理。\n" +
+		"## 高风险岗位描述识别\n重点识别并解释：加班文化、薪资描述模糊（如面议/范围过宽/无结构）、职责边界不清、要求不合理。\n" +
 		"## 求职建议\n给出可执行建议（筛选关键词、面试提问点、避坑策略）。\n\n" +
+		extraRule + "\n\n" +
 		"用户意向：\n" + strings.TrimSpace(userQuery) + "\n\nDeepResearch结果：\n" + strings.TrimSpace(research)
 }
 
