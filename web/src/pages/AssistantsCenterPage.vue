@@ -18,7 +18,7 @@ const assistantCards = computed<AssistantCenterCard[]>(() => [
   {
     title: '主控编排助手',
     agentId: 'host',
-    description: '统一分发与编排任务到各个系统助手，适合作为平台的总入口与协同中枢。',
+    description: '统一分发与编排任务到各个系统助手，适合作为平台总入口与协同中枢。',
     tags: ['总控分发', '任务编排', '协同入口'],
   },
   {
@@ -50,6 +50,12 @@ const assistantCards = computed<AssistantCenterCard[]>(() => [
     agentId: 'financehelper',
     description: '支持记账、报表理解、财经信息辅助与理财建议，适合财务管理场景。',
     tags: ['记账分析', '财经信息', '理财辅助'],
+  },
+  {
+    title: '八字助手',
+    agentId: 'bazihelper',
+    description: '调用 Bazi MCP 工具进行八字排盘、节气日历查询，并生成结构化解读与咨询记录。',
+    tags: ['八字排盘', '命理解读', '黄历查询'],
   },
   {
     title: '简历优化助手',
@@ -93,96 +99,96 @@ const assistantMap = computed(() => new Map(AGENTS.map((agent) => [agent.value, 
 
 <template>
   <PageContainer mode="wide">
-  <main class="assistant-center">
-    <section class="assistant-center__hero module-section">
-      <div class="assistant-center__hero-copy">
-        <p class="assistant-center__eyebrow">Assistant Center</p>
-        <h1>助手中心</h1>
-        <p class="assistant-center__desc">
-          统一展示当前平台已有的所有助手入口，以资源中心的方式帮助用户快速理解不同助手的职责与适用场景。
-        </p>
-      </div>
-
-      <PageHeader
-        class="assistant-center__hero-header"
-        eyebrow="Assistant Center"
-        title="助手中心"
-        description="统一展示当前平台已有的全部助手入口，以平台资源中心的方式帮助用户快速理解不同助手的职责与适用场景。"
-        :surface="false"
-      />
-
-      <div class="assistant-center__hero-stats">
-        <article class="assistant-center__stat-card">
-          <span>助手总数</span>
-          <strong>{{ assistantCount }}</strong>
-        </article>
-        <article class="assistant-center__stat-card">
-          <span>当前结果</span>
-          <strong>{{ filteredCount }}</strong>
-        </article>
-      </div>
-    </section>
-
-    <section class="assistant-center__toolbar module-section">
-      <div class="assistant-center__search">
-        <label for="assistant-search">搜索助手</label>
-        <input
-          id="assistant-search"
-          v-model="searchKeyword"
-          type="search"
-          placeholder="按助手名称、说明或标签搜索"
-        />
-      </div>
-      <p class="assistant-center__toolbar-tip">点击卡片即可进入对应助手的对话控制台。</p>
-    </section>
-
-    <section class="assistant-center__grid">
-      <article v-for="assistant in filteredAssistants" :key="assistant.agentId" class="assistant-center__card module-section">
-        <div class="assistant-center__card-head">
-          <div>
-            <p class="assistant-center__card-id">{{ assistant.agentId }}</p>
-            <h2>{{ assistant.title }}</h2>
-          </div>
-          <span class="assistant-center__card-badge">Assistant</span>
+    <main class="assistant-center">
+      <section class="assistant-center__hero module-section">
+        <div class="assistant-center__hero-copy">
+          <p class="assistant-center__eyebrow">Assistant Center</p>
+          <h1>助手中心</h1>
+          <p class="assistant-center__desc">
+            统一展示当前平台已有的全部助手入口，以资源中心的方式帮助用户快速理解不同助手的职责与适用场景。
+          </p>
         </div>
 
-        <p class="assistant-center__card-desc">
-          {{ assistant.description || assistantMap.get(assistant.agentId) }}
-        </p>
+        <PageHeader
+          class="assistant-center__hero-header"
+          eyebrow="Assistant Center"
+          title="助手中心"
+          description="统一展示当前平台已有的全部助手入口，以平台资源中心的方式帮助用户快速理解不同助手的职责与适用场景。"
+          :surface="false"
+        />
 
-        <div class="assistant-center__card-preview">
-          <div class="assistant-center__preview-top">
-            <span></span>
-            <span></span>
-            <span></span>
+        <div class="assistant-center__hero-stats">
+          <article class="assistant-center__stat-card">
+            <span>助手总数</span>
+            <strong>{{ assistantCount }}</strong>
+          </article>
+          <article class="assistant-center__stat-card">
+            <span>当前结果</span>
+            <strong>{{ filteredCount }}</strong>
+          </article>
+        </div>
+      </section>
+
+      <section class="assistant-center__toolbar module-section">
+        <div class="assistant-center__search">
+          <label for="assistant-search">搜索助手</label>
+          <input
+            id="assistant-search"
+            v-model="searchKeyword"
+            type="search"
+            placeholder="按助手名称、说明或标签搜索"
+          />
+        </div>
+        <p class="assistant-center__toolbar-tip">点击卡片即可进入对应助手的对话控制台。</p>
+      </section>
+
+      <section class="assistant-center__grid">
+        <article v-for="assistant in filteredAssistants" :key="assistant.agentId" class="assistant-center__card module-section">
+          <div class="assistant-center__card-head">
+            <div>
+              <p class="assistant-center__card-id">{{ assistant.agentId }}</p>
+              <h2>{{ assistant.title }}</h2>
+            </div>
+            <span class="assistant-center__card-badge">Assistant</span>
           </div>
-          <div class="assistant-center__preview-body">
-            <aside class="assistant-center__preview-side">
+
+          <p class="assistant-center__card-desc">
+            {{ assistant.description || assistantMap.get(assistant.agentId) }}
+          </p>
+
+          <div class="assistant-center__card-preview">
+            <div class="assistant-center__preview-top">
               <span></span>
               <span></span>
               <span></span>
-            </aside>
-            <div class="assistant-center__preview-main">
-              <div class="assistant-center__preview-hero"></div>
-              <div class="assistant-center__preview-grid">
+            </div>
+            <div class="assistant-center__preview-body">
+              <aside class="assistant-center__preview-side">
                 <span></span>
                 <span></span>
                 <span></span>
+              </aside>
+              <div class="assistant-center__preview-main">
+                <div class="assistant-center__preview-hero"></div>
+                <div class="assistant-center__preview-grid">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <div class="assistant-center__tags">
-          <span v-for="tag in assistant.tags" :key="tag">{{ tag }}</span>
-        </div>
+          <div class="assistant-center__tags">
+            <span v-for="tag in assistant.tags" :key="tag">{{ tag }}</span>
+          </div>
 
-        <RouterLink class="btn-primary assistant-center__action" :to="`/assistants/${encodeURIComponent(assistant.agentId)}`">
-          进入助手
-        </RouterLink>
-      </article>
-    </section>
-  </main>
+          <RouterLink class="btn-primary assistant-center__action" :to="`/assistants/${encodeURIComponent(assistant.agentId)}`">
+            进入助手
+          </RouterLink>
+        </article>
+      </section>
+    </main>
   </PageContainer>
 </template>
 

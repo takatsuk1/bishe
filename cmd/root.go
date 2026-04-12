@@ -19,6 +19,7 @@ func init() {
 	rootCmd.AddCommand(deepResearchCmd)
 	rootCmd.AddCommand(scheduleHelperCmd)
 	rootCmd.AddCommand(financeHelperCmd)
+	rootCmd.AddCommand(baziHelperCmd)
 	rootCmd.AddCommand(resumeCustomizerCmd)
 	rootCmd.AddCommand(interviewSimulatorCmd)
 	rootCmd.AddCommand(careerRadarCmd)

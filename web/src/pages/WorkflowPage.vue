@@ -2020,6 +2020,9 @@ onBeforeUnmount(() => {
                       <option value="deepresearch">deepresearch</option>
                       <option value="urlreader">urlreader</option>
                       <option value="lbshelper">lbshelper</option>
+                      <option value="schedulehelper">schedulehelper</option>
+                      <option value="financehelper">financehelper</option>
+                      <option value="bazihelper">bazihelper</option>
                       <option value="custom">custom</option>
                     </select>
                   </label>

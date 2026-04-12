@@ -85,6 +85,11 @@ var (
 			} else {
 				startServer(serverConfig{name: "financehelper", addr: addr, handler: h})
 			}
+			if h, addr, err := buildBaziHelperHTTPServer(); err != nil {
+				logger.Fatal(err)
+			} else {
+				startServer(serverConfig{name: "bazihelper", addr: addr, handler: h})
+			}
 			if h, addr, err := buildResumeCustomizerHTTPServer(); err != nil {
 				logger.Fatal(err)
 			} else {
@@ -101,7 +106,7 @@ var (
 				startServer(serverConfig{name: "careerradar", addr: addr, handler: h})
 			}
 
-			for _, name := range []string{"deepresearch", "lbshelper", "urlreader", "schedulehelper", "financehelper", "resumecustomizer", "interviewsimulator", "careerradar"} {
+			for _, name := range []string{"deepresearch", "lbshelper", "urlreader", "schedulehelper", "financehelper", "bazihelper", "resumecustomizer", "interviewsimulator", "careerradar"} {
 				serverURL := getAgentServerURLByName(cfg.HostAgent.Agents, name)
 				if serverURL == "" {
 					logger.Fatalf("host_agent.agents missing server_url for %s", name)
@@ -168,6 +173,7 @@ func startConfiguredUserAgents(cfg *config.MainConfig, projectRoot string) error
 		"lbshelper":          true,
 		"schedulehelper":     true,
 		"financehelper":      true,
+		"bazihelper":         true,
 		"resumecustomizer":   true,
 		"interviewsimulator": true,
 		"careerradar":        true,

@@ -166,6 +166,7 @@ func (api *OrchestratorAPI) handleListAgents(w http.ResponseWriter, r *http.Requ
 		{ID: "lbshelper", Name: "出行助手", Description: "出行助手，使用 AMap 和 Tavily 规划行程"},
 		{ID: "schedulehelper", Name: "日程规划助手", Description: "日程规划助手，输出任务优先级和时间安排建议"},
 		{ID: "financehelper", Name: "财务助手", Description: "财务助手，支持记账、财务报告、财经资讯整理与理财建议"},
+		{ID: "bazihelper", Name: "八字助手", Description: "八字助手，调用 Bazi MCP 工具生成命盘并输出结构化解读"},
 		{ID: "resumecustomizer", Name: "简历优化助手", Description: "简历优化助手，结合目标岗位与上传简历生成定制版简历"},
 		{ID: "interviewsimulator", Name: "面试模拟助手", Description: "面试模拟助手，基于上传简历生成结构化模拟面试内容"},
 		{ID: "careerradar", Name: "职场雷达助手", Description: "职场雷达助手，调用 deepresearch 推荐匹配岗位并识别高风险岗位描述"},

@@ -9,6 +9,7 @@ export const AGENTS: { label: string; value: AgentModel; description: string }[]
   { label: '出行助手', value: 'lbshelper', description: '处理路线规划与地点相关问题。' },
   { label: '日程规划助手', value: 'schedulehelper', description: '给出任务优先级与时间安排建议。' },
   { label: '财务助手', value: 'financehelper', description: '支持记账、报表、财经信息与理财建议。' },
+  { label: '八字助手', value: 'bazihelper', description: '调用八字 MCP 工具排盘，并输出结构化命理解读。' },
   { label: '简历优化助手', value: 'resumecustomizer', description: '结合岗位与简历内容生成定制化简历。' },
   { label: '面试模拟助手', value: 'interviewsimulator', description: '基于简历进行结构化模拟面试。' },
   { label: '职场雷达助手', value: 'careerradar', description: '推荐匹配岗位并识别高风险岗位描述。' },

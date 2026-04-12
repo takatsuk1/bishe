@@ -78,13 +78,12 @@ func (api *UserToolAPI) seedBuiltInTools(ctx context.Context) error {
 		amapServerURL = strings.TrimSpace(cfg.AMap.ServerURL)
 		mysqlDSN = strings.TrimSpace(cfg.MySQL.DSN)
 	}
-
 	builtins := []storage.UserToolDefinition{
 		{
 			ToolID:      "agent_info",
 			UserID:      "system",
 			Name:        "agent_info",
-			Description: "查询当前系统可用的 Agent 列表与能力说明",
+			Description: "查询当前系统内可调用的 Agent 列表",
 			ToolType:    string(tools.ToolTypeHTTP),
 			Config: map[string]any{
 				"method":  "GET",
@@ -93,14 +92,14 @@ func (api *UserToolAPI) seedBuiltInTools(ctx context.Context) error {
 			},
 			Parameters: []storage.ToolParameterDef{},
 			OutputParameters: []storage.ToolParameterDef{
-				{Name: "result", Type: "string", Required: true, Description: "HTTP 响应中实际需要的结果内容"},
+				{Name: "result", Type: "string", Required: true, Description: "HTTP 调用返回的 Agent 列表"},
 			},
 		},
 		{
 			ToolID:      "jina_reader",
 			UserID:      "system",
 			Name:        "jina_reader",
-			Description: "通过 Jina Reader 拉取并清洗网页正文内容",
+			Description: "通过 Jina Reader 读取网页正文",
 			ToolType:    string(tools.ToolTypeHTTP),
 			Config: map[string]any{
 				"method":  "GET",
@@ -108,17 +107,17 @@ func (api *UserToolAPI) seedBuiltInTools(ctx context.Context) error {
 				"timeout": 60,
 			},
 			Parameters: []storage.ToolParameterDef{
-				{Name: "url", Type: "string", Required: true, Description: "需要读取的网页地址（http/https）"},
+				{Name: "url", Type: "string", Required: true, Description: "待读取网页链接，需为 http/https"},
 			},
 			OutputParameters: []storage.ToolParameterDef{
-				{Name: "result", Type: "string", Required: true, Description: "HTTP 响应中实际需要的结果内容"},
+				{Name: "result", Type: "string", Required: true, Description: "HTTP 调用返回的网页正文"},
 			},
 		},
 		{
 			ToolID:      "tavily",
 			UserID:      "system",
 			Name:        "tavily",
-			Description: "调用 Tavily 搜索 API 进行实时检索",
+			Description: "调用 Tavily 搜索 API 执行联网检索",
 			ToolType:    string(tools.ToolTypeHTTP),
 			Config: map[string]any{
 				"method": "POST",
@@ -132,38 +131,38 @@ func (api *UserToolAPI) seedBuiltInTools(ctx context.Context) error {
 			},
 			Parameters: []storage.ToolParameterDef{
 				{Name: "api_key", Type: "string", Required: true, Description: "Tavily API Key"},
-				{Name: "query", Type: "string", Required: true, Description: "检索关键词"},
-				{Name: "search_depth", Type: "string", Required: false, Description: "检索深度，可选 basic/advanced", Default: "basic", Enum: []any{"basic", "advanced"}},
-				{Name: "max_results", Type: "number", Required: false, Description: "返回结果数量上限", Default: 5},
+				{Name: "query", Type: "string", Required: true, Description: "搜索查询词"},
+				{Name: "search_depth", Type: "string", Required: false, Description: "搜索深度 basic 或 advanced", Default: "basic", Enum: []any{"basic", "advanced"}},
+				{Name: "max_results", Type: "number", Required: false, Description: "最多返回结果数", Default: 5},
 			},
 			OutputParameters: []storage.ToolParameterDef{
-				{Name: "result", Type: "string", Required: true, Description: "HTTP 响应中实际需要的结果内容"},
+				{Name: "result", Type: "string", Required: true, Description: "HTTP 调用返回的检索结果"},
 			},
 		},
 		{
 			ToolID:      "amap",
 			UserID:      "system",
 			Name:        "amap",
-			Description: "调用 AMap MCP 服务；由 Agent 通过 tool_name 决定具体子工具",
+			Description: "AMap MCP 服务，由 Agent 通过 tool_name 自动选择地图子工具",
 			ToolType:    string(tools.ToolTypeMCP),
 			Config: map[string]any{
 				"server_url": amapServerURL,
 				"tool_name":  "auto",
 			},
 			Parameters: []storage.ToolParameterDef{
-				{Name: "tool_name", Type: "string", Required: true, Description: "要调用的 MCP 子工具名（如 maps_direction_driving）"},
-				{Name: "arguments", Type: "object", Required: false, Description: "MCP 子工具参数对象；优先使用此字段作为调用参数"},
-				{Name: "query", Type: "string", Required: false, Description: "兼容字段；若未提供 arguments，将 query 等普通参数直接透传"},
+				{Name: "tool_name", Type: "string", Required: true, Description: "要调用的 AMap MCP 子工具名"},
+				{Name: "arguments", Type: "object", Required: false, Description: "AMap MCP 子工具参数对象，优先使用该字段"},
+				{Name: "query", Type: "string", Required: false, Description: "兼容字段；若未提供 arguments，则 query 等参数会被透传"},
 			},
 			OutputParameters: []storage.ToolParameterDef{
-				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的主要结果内容"},
+				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的结果内容"},
 			},
 		},
 		{
 			ToolID:      "akshare-one-mcp",
 			UserID:      "system",
 			Name:        "akshare-one-mcp",
-			Description: "本地 AkShare MCP 服务；由 Agent 通过 tool_name 决定具体子工具",
+			Description: "AkShare MCP 服务，由 Agent 通过 tool_name 自动选择财经子工具",
 			ToolType:    string(tools.ToolTypeMCP),
 			Config: map[string]any{
 				"mcp_mode":    "stdio",
@@ -177,19 +176,19 @@ func (api *UserToolAPI) seedBuiltInTools(ctx context.Context) error {
 				},
 			},
 			Parameters: []storage.ToolParameterDef{
-				{Name: "tool_name", Type: "string", Required: true, Description: "要调用的 MCP 子工具名"},
-				{Name: "arguments", Type: "object", Required: false, Description: "MCP 子工具参数对象；优先使用此字段作为调用参数"},
-				{Name: "query", Type: "string", Required: false, Description: "兼容字段；若未提供 arguments，将 query 等普通参数直接透传"},
+				{Name: "tool_name", Type: "string", Required: true, Description: "要调用的 AkShare MCP 子工具名"},
+				{Name: "arguments", Type: "object", Required: false, Description: "AkShare MCP 子工具参数对象，优先使用该字段"},
+				{Name: "query", Type: "string", Required: false, Description: "兼容字段；若未提供 arguments，则 query 等参数会被透传"},
 			},
 			OutputParameters: []storage.ToolParameterDef{
-				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的主要结果内容"},
+				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的结果内容"},
 			},
 		},
 		{
 			ToolID:      "fetch",
 			UserID:      "system",
 			Name:        "fetch",
-			Description: "本地 Fetch MCP 服务；由 Agent 通过 tool_name 决定具体子工具",
+			Description: "本地 Fetch MCP 服务，由 Agent 通过 tool_name 自动选择网页相关子工具",
 			ToolType:    string(tools.ToolTypeMCP),
 			Config: map[string]any{
 				"mcp_mode":    "stdio",
@@ -203,9 +202,25 @@ func (api *UserToolAPI) seedBuiltInTools(ctx context.Context) error {
 				},
 			},
 			Parameters: []storage.ToolParameterDef{
-				{Name: "tool_name", Type: "string", Required: true, Description: "要调用的 MCP 子工具名"},
-				{Name: "arguments", Type: "object", Required: false, Description: "MCP 子工具参数对象；优先使用此字段作为调用参数"},
-				{Name: "query", Type: "string", Required: false, Description: "兼容字段；若未提供 arguments，将 query 等普通参数直接透传"},
+				{Name: "tool_name", Type: "string", Required: true, Description: "要调用的 Fetch MCP 子工具名"},
+				{Name: "arguments", Type: "object", Required: false, Description: "Fetch MCP 子工具参数对象，优先使用该字段"},
+				{Name: "query", Type: "string", Required: false, Description: "兼容字段；若未提供 arguments，则 query 等参数会被透传"},
+			},
+			OutputParameters: []storage.ToolParameterDef{
+				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的结果内容"},
+			},
+		},
+		{
+			ToolID:      tools.BaziMCPToolID,
+			UserID:      "system",
+			Name:        "bazi",
+			Description: "本地 Bazi MCP 服务，由 Agent 通过 tool_name 自动决定调用哪个八字子工具",
+			ToolType:    string(tools.ToolTypeMCP),
+			Config:      tools.BaziMCPUserToolConfig(),
+			Parameters: []storage.ToolParameterDef{
+				{Name: "tool_name", Type: "string", Required: true, Description: "要调用的 Bazi MCP 子工具名"},
+				{Name: "arguments", Type: "object", Required: false, Description: "Bazi MCP 子工具参数对象，优先使用该字段作为调用参数"},
+				{Name: "query", Type: "string", Required: false, Description: "兼容字段；若未提供 arguments，则 query 等普通参数会被直接透传"},
 			},
 			OutputParameters: []storage.ToolParameterDef{
 				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的主要结果内容"},
@@ -215,7 +230,7 @@ func (api *UserToolAPI) seedBuiltInTools(ctx context.Context) error {
 			ToolID:      "mysql_exec",
 			UserID:      "system",
 			Name:        "mysql_exec",
-			Description: "本地 MySQL MCP 服务；执行任意 SQL",
+			Description: "本地 MySQL MCP 服务，用于执行 SQL",
 			ToolType:    string(tools.ToolTypeMCP),
 			Config: map[string]any{
 				"mcp_mode":    "stdio",
@@ -237,14 +252,14 @@ func (api *UserToolAPI) seedBuiltInTools(ctx context.Context) error {
 				{Name: "sql", Type: "string", Required: true, Description: "要执行的 SQL 语句"},
 			},
 			OutputParameters: []storage.ToolParameterDef{
-				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的主要结果内容"},
+				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的结果内容"},
 			},
 		},
 		{
 			ToolID:      "json_file",
 			UserID:      "system",
 			Name:        "json_file",
-			Description: "本地 JSON 文件读写 MCP 服务",
+			Description: "本地 JSON 文件 MCP 服务",
 			ToolType:    string(tools.ToolTypeMCP),
 			Config: map[string]any{
 				"mcp_mode":    "stdio",
@@ -263,12 +278,12 @@ func (api *UserToolAPI) seedBuiltInTools(ctx context.Context) error {
 				},
 			},
 			Parameters: []storage.ToolParameterDef{
-				{Name: "action", Type: "string", Required: true, Description: "read 或 write"},
+				{Name: "action", Type: "string", Required: true, Description: "操作类型，read 或 write"},
 				{Name: "path", Type: "string", Required: true, Description: "JSON 文件路径"},
-				{Name: "json", Type: "object", Required: false, Description: "写入时的 JSON 内容，可传对象或 JSON 字符串"},
+				{Name: "json", Type: "object", Required: false, Description: "写入时提供的 JSON 对象"},
 			},
 			OutputParameters: []storage.ToolParameterDef{
-				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的主要结果内容"},
+				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的结果内容"},
 			},
 		},
 		{
@@ -292,14 +307,14 @@ func (api *UserToolAPI) seedBuiltInTools(ctx context.Context) error {
 				},
 			},
 			Parameters: []storage.ToolParameterDef{
-				{Name: "path", Type: "string", Required: true, Description: "脚本路径或命令"},
-				{Name: "args", Type: "array", Required: false, Description: "命令参数数组"},
-				{Name: "interpreter", Type: "string", Required: false, Description: "可选解释器，如 powershell/python"},
+				{Name: "path", Type: "string", Required: true, Description: "脚本路径"},
+				{Name: "args", Type: "array", Required: false, Description: "脚本执行参数"},
+				{Name: "interpreter", Type: "string", Required: false, Description: "解释器，可选 powershell 或 python"},
 				{Name: "cwd", Type: "string", Required: false, Description: "执行工作目录"},
-				{Name: "timeout_sec", Type: "number", Required: false, Description: "超时时间秒，默认 60"},
+				{Name: "timeout_sec", Type: "number", Required: false, Description: "超时时间，默认 60 秒"},
 			},
 			OutputParameters: []storage.ToolParameterDef{
-				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的主要结果内容"},
+				{Name: "result", Type: "string", Required: true, Description: "MCP 调用返回的结果内容"},
 			},
 		},
 	}

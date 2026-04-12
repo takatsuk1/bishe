@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
@@ -421,97 +421,16 @@ const latestAssistantMessageId = computed(() => {
   return ''
 })
 
-const semanticProgress = computed<StepEvent[]>(() => {
-  // Inline progress in assistant message should come from chat stream step tokens only.
-  // Do not mix monitor polling events here, otherwise frequent polling causes visible flicker.
-  const semantic = activeStepEvents.value.filter((ev) => {
-    const phase = (ev.phase ?? '').trim().toLowerCase()
-    const name = (ev.name ?? '').trim().toLowerCase()
-    return phase === 'semantic' || name.includes('.semantic.') || name.includes('.llm.')
-  })
-  if (semantic.length === 0) {
-    return []
-  }
-  const dedup = new Map<string, StepEvent>()
-  const currentLLMNodeByAgent = new Map<string, string>()
-  for (const ev of semantic) {
-    const name = (ev.name ?? '').trim().toLowerCase()
-    const agent = (ev.agent ?? '').trim().toLowerCase()
-    const msg = (ev.messageZh ?? '').trim()
-
-    if (name.endsWith('.llm.start')) {
-      const idx = msg.indexOf('：')
-      if (idx >= 0) {
-        const nodeText = msg.slice(idx + 1).trim()
-        if (nodeText) {
-          currentLLMNodeByAgent.set(agent, nodeText)
-        }
-      }
-      const nodeText = currentLLMNodeByAgent.get(agent) ?? 'chat_model'
-      dedup.set(`${agent}|llm|${nodeText}|start`, { ...ev, messageZh: `正在调用大模型：${nodeText}` })
-      continue
-    }
-
-    if (name.endsWith('.llm.delta') || name.endsWith('.llm.streaming')) {
-      // Drop high-frequency token-level events to avoid flicker.
-      continue
-    }
-
-    if (name.endsWith('.llm.end')) {
-      const nodeText = currentLLMNodeByAgent.get(agent) ?? 'chat_model'
-      dedup.set(`${agent}|llm|${nodeText}|end`, { ...ev, messageZh: '完成：大模型处理' })
-      continue
-    }
-
-    if (name.endsWith('.tool.start')) {
-      dedup.set(`${agent}|tool|start`, { ...ev, messageZh: '正在调用工具' })
-      continue
-    }
-    if (name.endsWith('.tool.end')) {
-      dedup.set(`${agent}|tool|end`, { ...ev, messageZh: '完成：工具调用' })
-      continue
-    }
-    if (name.endsWith('.call_agent.start')) {
-      dedup.set(`${agent}|call_agent|start`, { ...ev, messageZh: '正在调用下游Agent' })
-      continue
-    }
-    if (name.endsWith('.call_agent.end')) {
-      dedup.set(`${agent}|call_agent|end`, { ...ev, messageZh: '完成：下游Agent返回' })
-      continue
-    }
-    if (name.endsWith('.research.start')) {
-      dedup.set(`${agent}|research|start`, { ...ev, messageZh: '正在检索信息' })
-      continue
-    }
-    if (name.endsWith('.research.end')) {
-      dedup.set(`${agent}|research|end`, { ...ev, messageZh: '完成：检索信息' })
-      continue
-    }
-
-    if (ev.state === 'error') {
-      dedup.set(`${agent}|generic|error`, { ...ev, messageZh: '执行失败' })
-      continue
-    }
-    if (ev.state === 'end') {
-      dedup.set(`${agent}|generic|end`, { ...ev, messageZh: '完成：执行步骤' })
-      continue
-    }
-    if (ev.state === 'start' || ev.state === 'info') {
-      dedup.set(`${agent}|generic|start`, { ...ev, messageZh: '正在执行步骤' })
-      continue
-    }
-
-    dedup.set(`${ev.ts}|${ev.agent}|${ev.phase}|${ev.name}|${ev.state}|${ev.messageZh}`, ev)
-  }
-  return [...dedup.values()].slice(-8)
-})
+function executionStepDedupKey(ev: StepEvent): string {
+  return `${ev.ts}|${ev.agent}|${ev.phase}|${ev.name}|${ev.state}|${ev.messageZh}`
+}
 
 function isLatestAssistantMessage(msg: ChatMessage): boolean {
   return msg.role === 'assistant' && msg.id === latestAssistantMessageId.value
 }
 
 function showInlineProgress(msg: ChatMessage): boolean {
-  return isLatestAssistantMessage(msg) && semanticProgress.value.length > 0
+  return msg.role === 'assistant' && (msg.executionSteps?.length ?? 0) > 0
 }
 
 function isStreamingAssistantMessage(msg: ChatMessage): boolean {
@@ -618,6 +537,40 @@ watch(
     await nextTick()
     scrollStepsToEnd()
   },
+)
+
+watch(
+  detailedStepEvents,
+  async (newSteps) => {
+    if (!activeConversation.value) {
+      return
+    }
+    
+    const assistantMessage = activeConversation.value.messages.find(
+      (msg) => msg.role === 'assistant' && msg.id === latestAssistantMessageId.value
+    )
+    
+    if (!assistantMessage) {
+      return
+    }
+    
+    if (!assistantMessage.executionSteps) {
+      assistantMessage.executionSteps = []
+    }
+    
+    const existingKeys = new Set(assistantMessage.executionSteps.map((ev) => executionStepDedupKey(ev)))
+    const newExecutionSteps = newSteps.filter((ev) => {
+      const key = executionStepDedupKey(ev)
+      return !existingKeys.has(key)
+    })
+    
+    if (newExecutionSteps.length > 0) {
+      assistantMessage.executionSteps.push(...newExecutionSteps)
+      await nextTick()
+      scrollMessagesToEnd()
+    }
+  },
+  { deep: true }
 )
 
 function scrollStepsToEnd(force = false): void {
@@ -951,6 +904,7 @@ async function sendMessage(): Promise<void> {
     content: '',
     createdAt: nowIso(),
     status: 'queued',
+    executionSteps: [],
   }
 
   const conversationId = activeConversation.value.id
@@ -1070,6 +1024,21 @@ async function sendMessage(): Promise<void> {
             }
           }
           draft.stepEvents = existing.slice(-5000)
+
+          const assistant = draft.messages.find((item) => item.id === assistantMessage.id)
+          if (assistant) {
+            if (!assistant.executionSteps) {
+              assistant.executionSteps = []
+            }
+            const lineSeen = new Set(assistant.executionSteps.map((ev) => executionStepDedupKey(ev)))
+            for (const ev of filteredSteps) {
+              const lineKey = executionStepDedupKey(ev)
+              if (!lineSeen.has(lineKey)) {
+                assistant.executionSteps.push(ev)
+                lineSeen.add(lineKey)
+              }
+            }
+          }
         }
 
         const assistant = draft.messages.find((item) => item.id === assistantMessage.id)
@@ -1091,6 +1060,7 @@ async function sendMessage(): Promise<void> {
      if (filteredSteps.length > 0) {
         await nextTick()
         scrollStepsToEnd()
+        scrollMessagesToEnd()
       }
 
       if (chunk.done) {
@@ -1338,10 +1308,15 @@ function renderMarkdown(content: string): string {
                   <div class="assistant-progress-head">执行进度</div>
                   <ul class="assistant-progress-list">
                     <li
-                      v-for="ev in semanticProgress"
-                      :key="`${ev.ts}-${ev.agent}-${ev.phase}-${ev.name}-${ev.state}-${ev.messageZh}`"
+                      v-for="ev in msg.executionSteps"
+                      :key="executionStepDedupKey(ev)"
                       class="assistant-progress-item"
                     >
+                      <div class="assistant-progress-row">
+                        <span class="assistant-progress-time">{{ formatTime(ev.ts) }}</span>
+                        <span :class="['chip', 'tiny', stepChipClass(ev.state)]">{{ stepStateLabel(ev.state) }}</span>
+                        <span v-if="(ev.agent ?? '').trim()" class="assistant-progress-agent">{{ ev.agent }}</span>
+                      </div>
                       <span class="assistant-progress-text">{{ ev.messageZh }}</span>
                     </li>
                   </ul>
@@ -1412,27 +1387,7 @@ function renderMarkdown(content: string): string {
           <span class="task-text" v-if="runPollError">{{ runPollError }}</span>
         </header>
 
-        <section class="run-steps assistant-console__execution-summary">
-          <div class="run-steps-header">
-            <strong>编排进度</strong>
-            <span class="task-text">{{ activeRunStateLabel }}</span>
-          </div>
-          <p class="task-text">当前节点：{{ runSnapshot?.currentNodeId ?? '—' }}</p>
-          <p class="task-text">最新步骤：{{ latestStepLabel }}</p>
-          <div class="run-steps-chips" v-if="runSnapshot && runStepNodeIds.length">
-            <span
-              v-for="nodeId in runStepNodeIds"
-              :key="nodeId"
-              :class="[
-                'chip',
-                'tiny',
-                nodeId === (runSnapshot.currentNodeId ?? '') && runSnapshot.state === 'running' ? 'running' : 'completed',
-              ]"
-            >
-              {{ nodeId }}
-            </span>
-          </div>
-        </section>
+
 
         <section class="step-bar assistant-console__step-bar">
           <strong class="step-bar-title">运行步骤</strong>
@@ -1711,6 +1666,67 @@ function renderMarkdown(content: string): string {
 
 .assistant-console__step-row {
   align-items: center;
+}
+
+.assistant-progress-card {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line, #e2e8f0);
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.assistant-progress-head {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-muted, #64748b);
+  margin-bottom: 8px;
+}
+
+.assistant-progress-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.assistant-progress-item {
+  padding: 6px 0;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.35);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.assistant-progress-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.assistant-progress-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.assistant-progress-time {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+  font-variant-numeric: tabular-nums;
+}
+
+.assistant-progress-agent {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+}
+
+.assistant-progress-text {
+  display: block;
+  color: var(--text, #1e293b);
 }
 
 @media (max-width: 1280px) {

@@ -459,6 +459,7 @@ func InitAgentWorkflows() error {
 		{"lbshelper", "出行助手", "出行助手，仅使用 AMap 规划行程", buildLBSHelperWorkflowDef},
 		{"schedulehelper", "日程规划助手", "日程规划助手，输出任务优先级和时间安排建议", buildScheduleHelperWorkflowDef},
 		{"financehelper", "财务助手", "财务助手，支持记账、财务报告、财经资讯整理与理财建议", buildFinanceHelperWorkflowDef},
+		{"bazihelper", "八字助手", "八字助手，调用 Bazi MCP 工具生成命盘并输出结构化解读", buildBaziHelperWorkflowDef},
 		{"resumecustomizer", "简历优化助手", "简历优化助手，结合目标岗位与上传简历生成定制版简历", buildResumeCustomizerWorkflowDef},
 		{"interviewsimulator", "面试模拟助手", "面试模拟助手，基于上传简历生成结构化模拟面试内容", buildInterviewSimulatorWorkflowDef},
 		{"careerradar", "职场雷达助手", "职场雷达助手，调用 deepresearch 推荐匹配岗位并识别高风险岗位描述", buildCareerRadarWorkflowDef},
@@ -533,6 +534,9 @@ func buildHostAgentWorkflow() AgentWorkflowDetail {
 			{AgentID: "deepresearch", Type: "downstream", Required: false, Description: "深度研究 Agent"},
 			{AgentID: "urlreader", Type: "downstream", Required: false, Description: "URL 读取 Agent"},
 			{AgentID: "lbshelper", Type: "downstream", Required: false, Description: "位置服务 Agent"},
+			{AgentID: "schedulehelper", Type: "downstream", Required: false, Description: "日程规划 Agent"},
+			{AgentID: "financehelper", Type: "downstream", Required: false, Description: "财务 Agent"},
+			{AgentID: "bazihelper", Type: "downstream", Required: false, Description: "八字助手 Agent"},
 			{AgentID: "resumecustomizer", Type: "downstream", Required: false, Description: "简历定制 Agent"},
 			{AgentID: "interviewsimulator", Type: "downstream", Required: false, Description: "面试模拟 Agent"},
 			{AgentID: "careerradar", Type: "downstream", Required: false, Description: "职场雷达 Agent"},
@@ -547,7 +551,7 @@ func buildHostAgentWorkflow() AgentWorkflowDetail {
 			{ID: "agent_info", Type: "tool", Config: map[string]interface{}{"tool_name": "agent_info"}, Metadata: map[string]string{"ui.label": "获取可调用 Agent", "ui.x": "300", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "chat_model", Type: "chat_model", PreInput: "你是路由决策器。可调用 agent 列表如下：\n{{agent_info.response}}\n若无需调用下游 agent，只输出 false；若需要调用，只输出 agent 名称本身。用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "路由决策", "ui.x": "520", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "condition", Type: "condition", Config: map[string]interface{}{"left_type": "path", "left_value": "chat_model.response", "operator": "eq", "right_type": "const", "right_value": "false"}, Metadata: map[string]string{"ui.label": "是否直接回答", "ui.x": "700", "ui.y": "120", "ui.agent": "host"}},
-			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "resumecustomizer", "interviewsimulator", "careerradar"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
+			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "bazihelper", "resumecustomizer", "interviewsimulator", "careerradar"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
 			{ID: "direct_answer", Type: "chat_model", PreInput: "请基于可调用 agent 列表直接回答用户问题。可调用 agent 列表：\n{{agent_info.response}}\n用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "直接回答", "ui.x": "760", "ui.y": "180", "ui.agent": "host"}},
 			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "980", "ui.y": "120"}},
 		},
@@ -798,7 +802,7 @@ func buildHostWorkflowDef() storage.WorkflowDefinition {
 			{ID: "agent_info", Type: "tool", Config: map[string]interface{}{"tool_name": "agent_info"}, Metadata: map[string]string{"ui.label": "获取可调用 Agent", "ui.x": "300", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "chat_model", Type: "chat_model", PreInput: "你是路由决策器。可调用 agent 列表如下：\n{{agent_info.response}}\n若无需调用下游 agent，只输出 false；若需要调用，只输出 agent 名称本身。用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "路由决策", "ui.x": "520", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "condition", Type: "condition", Config: map[string]interface{}{"left_type": "path", "left_value": "chat_model.response", "operator": "eq", "right_type": "const", "right_value": "false"}, Metadata: map[string]string{"ui.label": "是否直接回答", "ui.x": "700", "ui.y": "120", "ui.agent": "host"}},
-			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "resumecustomizer", "interviewsimulator", "careerradar"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
+			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "bazihelper", "resumecustomizer", "interviewsimulator", "careerradar"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
 			{ID: "direct_answer", Type: "chat_model", PreInput: "请基于可调用 agent 列表直接回答用户问题。可调用 agent 列表：\n{{agent_info.response}}\n用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "直接回答", "ui.x": "760", "ui.y": "180", "ui.agent": "host"}},
 			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "980", "ui.y": "120"}},
 		},
@@ -926,6 +930,27 @@ func buildFinanceHelperWorkflowDef() storage.WorkflowDefinition {
 			{From: "N_mysql_advice", To: "N_akshare_advice"},
 			{From: "N_akshare_advice", To: "N_respond"},
 			{From: "N_respond", To: "N_end"},
+		},
+	}
+}
+
+func buildBaziHelperWorkflowDef() storage.WorkflowDefinition {
+	return storage.WorkflowDefinition{
+		StartNodeID: "N_start",
+		Nodes: []storage.NodeDef{
+			{ID: "N_start", Type: "start", Metadata: map[string]string{"ui.label": "开始", "ui.x": "100", "ui.y": "180"}},
+			{ID: "N_extract", Type: "chat_model", PreInput: "识别用户提供的出生时间、性别、排盘目标与提问重点，并规划后续 Bazi MCP 工具调用。", Config: map[string]interface{}{"intent": "extract_bazi_request"}, Metadata: map[string]string{"ui.label": "规划八字调用", "ui.x": "300", "ui.y": "180", "ui.agent": "bazihelper"}},
+			{ID: "N_bazi", Type: "tool", Config: map[string]interface{}{"tool_name": "bazi"}, Metadata: map[string]string{"ui.label": "调用 Bazi MCP", "ui.x": "540", "ui.y": "180", "ui.agent": "bazihelper"}},
+			{ID: "N_summary", Type: "chat_model", PreInput: "请基于 Bazi MCP 返回结果，生成结构化中文分析，包括命盘信息、五行概览、重点结论、注意事项与必要免责声明。", Config: map[string]interface{}{"intent": "summarize_bazi_result"}, Metadata: map[string]string{"ui.label": "整理解读结果", "ui.x": "780", "ui.y": "180", "ui.agent": "bazihelper"}},
+			{ID: "N_record", Type: "tool", Config: map[string]interface{}{"tool_name": "mysql_exec"}, Metadata: map[string]string{"ui.label": "写入咨询记录", "ui.x": "1020", "ui.y": "180", "ui.agent": "bazihelper"}},
+			{ID: "N_end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "1260", "ui.y": "180"}},
+		},
+		Edges: []storage.EdgeDef{
+			{From: "N_start", To: "N_extract"},
+			{From: "N_extract", To: "N_bazi"},
+			{From: "N_bazi", To: "N_summary"},
+			{From: "N_summary", To: "N_record"},
+			{From: "N_record", To: "N_end"},
 		},
 	}
 }

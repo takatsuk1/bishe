@@ -7,6 +7,8 @@ export interface ChatMessage {
   createdAt: string
   status?: TaskState
   attachments?: UploadedFileMeta[]
+  /** Step tokens from stream, appended in order for this assistant reply (not overwritten). */
+  executionSteps?: StepEvent[]
 }
 
 export type AgentModel = string
