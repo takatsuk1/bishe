@@ -218,11 +218,16 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	if out == "" {
 		out = "Workflow executed successfully"
 	}
+	streamedFinal := lbsStreamedToUser(runResult)
 	if manager != nil {
-		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateCompleted, &internalproto.Message{
-			Role:  internalproto.MessageRoleAgent,
-			Parts: []internalproto.Part{internalproto.NewTextPart(out)},
-		})
+		var doneMsg *internalproto.Message
+		if !streamedFinal {
+			doneMsg = &internalproto.Message{
+				Role:  internalproto.MessageRoleAgent,
+				Parts: []internalproto.Part{internalproto.NewTextPart(out)},
+			}
+		}
+		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateCompleted, doneMsg)
 	}
 	return nil
 }
@@ -303,12 +308,30 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 	a.emitSemanticStep(ctx, taskID, "lbshelper.llm.start", internalproto.StepStateInfo, "正在调用大模型："+nodeID)
 	client := llm.NewClient(baseURL, apiKey)
 	var streamBuf strings.Builder
+	var pending strings.Builder
 	lastEmitAt := time.Time{}
+	streamToUser := intent == "summarize_route"
+	streamedToUser := false
+	flushToUser := func(force bool) {
+		if !streamToUser || pending.Len() == 0 {
+			return
+		}
+		if !force && pending.Len() < 48 {
+			return
+		}
+		a.emitAssistantDelta(ctx, taskID, pending.String())
+		pending.Reset()
+		streamedToUser = true
+	}
 	resp, err := client.ChatCompletionStream(ctx, model, []llm.Message{{Role: "user", Content: finalPrompt}}, nil, nil, func(delta string) error {
 		if strings.TrimSpace(delta) == "" {
 			return nil
 		}
 		streamBuf.WriteString(delta)
+		if streamToUser {
+			pending.WriteString(delta)
+			flushToUser(false)
+		}
 		if !lastEmitAt.IsZero() && time.Since(lastEmitAt) < 150*time.Millisecond {
 			return nil
 		}
@@ -316,6 +339,9 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 		a.emitSemanticStep(ctx, taskID, "lbshelper.llm.delta", internalproto.StepStateInfo, "正在调用大模型："+truncateText(streamBuf.String(), 140))
 		return nil
 	})
+	if err == nil {
+		flushToUser(true)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +363,11 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 		a.emitInfoStep(ctx, taskID, "llm", "lbshelper.summary.result", "已完成行程方案生成")
 	}
 
-	return map[string]any{"response": resp}, nil
+	output := map[string]any{"response": resp}
+	if streamedToUser {
+		output["streamed_to_user"] = true
+	}
+	return output, nil
 }
 
 func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
@@ -1046,6 +1076,43 @@ func (a *Agent) emitInfoStep(ctx context.Context, taskID string, phase string, n
 		Role:  internalproto.MessageRoleAgent,
 		Parts: []internalproto.Part{internalproto.NewTextPart(token)},
 	})
+}
+
+func (a *Agent) emitAssistantDelta(ctx context.Context, taskID string, text string) {
+	manager := taskManagerFromContext(ctx)
+	if manager == nil {
+		return
+	}
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
+		Role:  internalproto.MessageRoleAgent,
+		Parts: []internalproto.Part{internalproto.NewTextPart(text)},
+	})
+}
+
+func lbsStreamedToUser(runResult orchestrator.RunResult) bool {
+	for _, nr := range runResult.NodeResults {
+		if nr.Output == nil {
+			continue
+		}
+		v, ok := nr.Output["streamed_to_user"]
+		if !ok {
+			continue
+		}
+		switch t := v.(type) {
+		case bool:
+			if t {
+				return true
+			}
+		case string:
+			if strings.EqualFold(strings.TrimSpace(t), "true") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func toTerminalStepState(state orchestrator.TaskState) (internalproto.StepState, bool) {

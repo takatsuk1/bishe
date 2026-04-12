@@ -252,11 +252,16 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	if strings.TrimSpace(out) == "" {
 		out = "Workflow executed successfully"
 	}
+	streamedFinal := financeStreamedToUser(runResult)
 	if manager != nil {
-		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateCompleted, &internalproto.Message{
-			Role:  internalproto.MessageRoleAgent,
-			Parts: []internalproto.Part{internalproto.NewTextPart(out)},
-		})
+		var doneMsg *internalproto.Message
+		if !streamedFinal {
+			doneMsg = &internalproto.Message{
+				Role:  internalproto.MessageRoleAgent,
+				Parts: []internalproto.Part{internalproto.NewTextPart(out)},
+			}
+		}
+		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateCompleted, doneMsg)
 	}
 	return nil
 }
@@ -336,7 +341,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 		tableMetaHint := a.buildUserTableMetadataHint(ctx, userID)
 		prompt := buildPlanPrompt(originalQuery, userID, a.akshareToolCatalog, a.akshareToolSchema, tableMetaHint)
 		logger.Infof("[financehelper] planner_prompt task=%s node=%s user=%s prompt=\n%s", taskID, nodeID, userID, prompt)
-		resp, err := a.streamLLMResponse(ctx, taskID, nodeID, baseURL, apiKey, model, prompt)
+		resp, _, err := a.streamLLMResponse(ctx, taskID, nodeID, baseURL, apiKey, model, prompt, false)
 		if err != nil {
 			logger.Warnf("[financehelper] plan llm failed task=%s node=%s err=%v, using fallback", taskID, nodeID, err)
 			plan := finalizePlan(buildFallbackPlan(originalQuery), userID)
@@ -351,7 +356,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 		return planToOutput(plan), nil
 	case "final_response":
 		prompt := buildResponsePrompt(originalQuery, payload)
-		resp, err := a.streamLLMResponse(ctx, taskID, nodeID, baseURL, apiKey, model, prompt)
+		resp, streamedToUser, err := a.streamLLMResponse(ctx, taskID, nodeID, baseURL, apiKey, model, prompt, true)
 		if err != nil {
 			logger.Warnf("[financehelper] response llm failed task=%s node=%s err=%v, using fallback", taskID, nodeID, err)
 			return map[string]any{"response": a.fallbackResponse(originalQuery, payload)}, nil
@@ -360,9 +365,13 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 		if resp == "" {
 			resp = a.fallbackResponse(originalQuery, payload)
 		}
-		return map[string]any{"response": agentfmt.Clean(resp)}, nil
+		output := map[string]any{"response": agentfmt.Clean(resp)}
+		if streamedToUser {
+			output["streamed_to_user"] = true
+		}
+		return output, nil
 	default:
-		resp, err := a.streamLLMResponse(ctx, taskID, nodeID, baseURL, apiKey, model, query)
+		resp, _, err := a.streamLLMResponse(ctx, taskID, nodeID, baseURL, apiKey, model, query, false)
 		if err != nil {
 			return nil, err
 		}
@@ -374,16 +383,33 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 	}
 }
 
-func (a *Agent) streamLLMResponse(ctx context.Context, taskID string, nodeID string, baseURL string, apiKey string, model string, prompt string) (string, error) {
+func (a *Agent) streamLLMResponse(ctx context.Context, taskID string, nodeID string, baseURL string, apiKey string, model string, prompt string, streamToUser bool) (string, bool, error) {
 	a.emitSemanticStep(ctx, taskID, "financehelper.llm.start", internalproto.StepStateInfo, "正在调用大模型："+strings.TrimSpace(nodeID))
 	client := llm.NewClient(baseURL, apiKey)
 	var streamBuf strings.Builder
+	var pending strings.Builder
 	lastEmitAt := time.Time{}
+	streamedToUser := false
+	flushToUser := func(force bool) {
+		if !streamToUser || pending.Len() == 0 {
+			return
+		}
+		if !force && pending.Len() < 48 {
+			return
+		}
+		a.emitAssistantDelta(ctx, taskID, pending.String())
+		pending.Reset()
+		streamedToUser = true
+	}
 	resp, err := client.ChatCompletionStream(ctx, model, []llm.Message{{Role: "user", Content: prompt}}, nil, nil, func(delta string) error {
 		if strings.TrimSpace(delta) == "" {
 			return nil
 		}
 		streamBuf.WriteString(delta)
+		if streamToUser {
+			pending.WriteString(delta)
+			flushToUser(false)
+		}
 		if !lastEmitAt.IsZero() && time.Since(lastEmitAt) < 150*time.Millisecond {
 			return nil
 		}
@@ -391,11 +417,14 @@ func (a *Agent) streamLLMResponse(ctx context.Context, taskID string, nodeID str
 		a.emitSemanticStep(ctx, taskID, "financehelper.llm.delta", internalproto.StepStateInfo, "正在调用大模型："+truncateText(streamBuf.String(), 140))
 		return nil
 	})
+	if err == nil {
+		flushToUser(true)
+	}
 	if err != nil {
-		return "", err
+		return "", streamedToUser, err
 	}
 	a.emitSemanticStep(ctx, taskID, "financehelper.llm.end", internalproto.StepStateEnd, "完成：大模型处理")
-	return strings.TrimSpace(resp), nil
+	return strings.TrimSpace(resp), streamedToUser, nil
 }
 
 func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeID string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
@@ -1173,6 +1202,43 @@ func (a *Agent) emitSemanticStep(ctx context.Context, taskID string, name string
 		Role:  internalproto.MessageRoleAgent,
 		Parts: []internalproto.Part{internalproto.NewTextPart(token)},
 	})
+}
+
+func (a *Agent) emitAssistantDelta(ctx context.Context, taskID string, text string) {
+	manager := taskManagerFromContext(ctx)
+	if manager == nil {
+		return
+	}
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
+		Role:  internalproto.MessageRoleAgent,
+		Parts: []internalproto.Part{internalproto.NewTextPart(text)},
+	})
+}
+
+func financeStreamedToUser(runResult orchestrator.RunResult) bool {
+	for _, nr := range runResult.NodeResults {
+		if nr.Output == nil {
+			continue
+		}
+		v, ok := nr.Output["streamed_to_user"]
+		if !ok {
+			continue
+		}
+		switch t := v.(type) {
+		case bool:
+			if t {
+				return true
+			}
+		case string:
+			if strings.EqualFold(strings.TrimSpace(t), "true") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (a *Agent) startProgressReporter(ctx context.Context, taskID string, runID string, manager internaltm.Manager) func() {

@@ -120,8 +120,13 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	if strings.TrimSpace(out) == "" {
 		out = "面试模拟未生成有效输出，请重试。"
 	}
+	streamedFinal := interviewStreamedToUser(runResult)
 	if manager != nil {
-		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateCompleted, &internalproto.Message{Role: internalproto.MessageRoleAgent, Parts: []internalproto.Part{internalproto.NewTextPart(out)}})
+		var doneMsg *internalproto.Message
+		if !streamedFinal {
+			doneMsg = &internalproto.Message{Role: internalproto.MessageRoleAgent, Parts: []internalproto.Part{internalproto.NewTextPart(out)}}
+		}
+		_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateCompleted, doneMsg)
 	}
 	return nil
 }
@@ -160,6 +165,43 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 	return orchestrator.ExecutionResult{Output: out}, nil
 }
 
+func (a *Agent) emitAssistantDelta(ctx context.Context, taskID string, text string) {
+	manager := taskManagerFromContext(ctx)
+	if manager == nil {
+		return
+	}
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
+		Role:  internalproto.MessageRoleAgent,
+		Parts: []internalproto.Part{internalproto.NewTextPart(text)},
+	})
+}
+
+func interviewStreamedToUser(runResult orchestrator.RunResult) bool {
+	for _, nr := range runResult.NodeResults {
+		if nr.Output == nil {
+			continue
+		}
+		v, ok := nr.Output["streamed_to_user"]
+		if !ok {
+			continue
+		}
+		switch t := v.(type) {
+		case bool:
+			if t {
+				return true
+			}
+		case string:
+			if strings.EqualFold(strings.TrimSpace(t), "true") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string, payload map[string]any, nodeCfg map[string]any) (map[string]any, error) {
 	intent := strings.TrimSpace(fmt.Sprint(nodeCfg["intent"]))
 	query := strings.TrimSpace(extractNodeQuery(payload))
@@ -170,16 +212,33 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 	model := strings.TrimSpace(a.chatModel)
 	base := strings.TrimSpace(a.llmClient.BaseURL)
 	key := strings.TrimSpace(a.llmClient.APIKey)
-	call := func(prompt string) string {
+	call := func(prompt string, streamToUser bool) (string, bool) {
 		a.emitSemanticStep(ctx, taskID, "interviewsimulator.llm.start", internalproto.StepStateInfo, "正在调用大模型："+nodeID)
 		client := llm.NewClient(base, key)
 		var streamBuf strings.Builder
+		var pending strings.Builder
 		lastEmitAt := time.Time{}
+		streamedToUser := false
+		flushToUser := func(force bool) {
+			if !streamToUser || pending.Len() == 0 {
+				return
+			}
+			if !force && pending.Len() < 48 {
+				return
+			}
+			a.emitAssistantDelta(ctx, taskID, pending.String())
+			pending.Reset()
+			streamedToUser = true
+		}
 		r, e := client.ChatCompletionStream(ctx, model, []llm.Message{{Role: "user", Content: prompt}}, nil, nil, func(delta string) error {
 			if strings.TrimSpace(delta) == "" {
 				return nil
 			}
 			streamBuf.WriteString(delta)
+			if streamToUser {
+				pending.WriteString(delta)
+				flushToUser(false)
+			}
 			if !lastEmitAt.IsZero() && time.Since(lastEmitAt) < 150*time.Millisecond {
 				return nil
 			}
@@ -187,22 +246,26 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 			a.emitSemanticStep(ctx, taskID, "interviewsimulator.llm.delta", internalproto.StepStateInfo, "正在调用大模型："+cut(streamBuf.String(), 140))
 			return nil
 		})
+		if e == nil {
+			flushToUser(true)
+		}
 		if e != nil {
 			logger.Warnf("[interviewsimulator] llm fail task=%s intent=%s err=%v", taskID, intent, e)
-			return ""
+			return "", streamedToUser
 		}
 		a.emitSemanticStep(ctx, taskID, "interviewsimulator.llm.end", internalproto.StepStateEnd, "完成：大模型处理")
-		return strings.TrimSpace(r)
+		return strings.TrimSpace(r), streamedToUser
 	}
 	switch intent {
 	case "analyze_profile":
 		if st.ProfileSummary == "" {
-			st.ProfileSummary = nonEmpty(call("你是面试官助理，基于简历提炼候选人画像、风险点和高频追问点：\n"+stripStateToken(query)), "候选人画像暂不可用，请继续面试。")
+			raw, _ := call("你是面试官助理，基于简历提炼候选人画像、风险点和高频追问点：\n"+stripStateToken(query), false)
+			st.ProfileSummary = nonEmpty(raw, "候选人画像暂不可用，请继续面试。")
 		}
 		return map[string]any{"response": st.ProfileSummary, "state": st}, nil
 	case "plan_interview":
 		if len(st.QuestionPlan) == 0 {
-			raw := call(fmt.Sprintf("基于画像生成%d道由浅入深主问题，只输出JSON数组，每项字段question/focus/difficulty。画像：%s", st.MaxRounds, st.ProfileSummary))
+			raw, _ := call(fmt.Sprintf("基于画像生成%d道由浅入深主问题，只输出JSON数组，每项字段question/focus/difficulty。画像：%s", st.MaxRounds, st.ProfileSummary), false)
 			st.QuestionPlan = parsePlan(raw, st.MaxRounds)
 			if len(st.QuestionPlan) == 0 {
 				st.QuestionPlan = fallbackPlan(st.MaxRounds)
@@ -214,7 +277,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 		if st.LastQuestion == "" || skipScore(ans) {
 			return map[string]any{"response": "score_skipped", "state": st, "score_summary": ""}, nil
 		}
-		raw := call("仅输出JSON对象(total/correctness/depth/expression/structure/risk/highlights/weaknesses)。问题：" + st.LastQuestion + "\n回答：" + ans)
+		raw, _ := call("仅输出JSON对象(total/correctness/depth/expression/structure/risk/highlights/weaknesses)。问题："+st.LastQuestion+"\n回答："+ans, false)
 		sc := parseScore(raw, st, ans)
 		if sc.Total == 0 {
 			sc = fallbackScore(st, ans)
@@ -227,14 +290,16 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 			return map[string]any{"response": "followup_skipped", "state": st, "followup": ""}, nil
 		}
 		strategy := scoreStrategy(sc.Total)
-		fu := nonEmpty(call("根据评分生成1条追问，只输出追问句。策略："+strategy+"。原问题："+st.LastQuestion+"。评分："+scoreSummary(sc)), fallbackFollowup(strategy))
+		fu, _ := call("根据评分生成1条追问，只输出追问句。策略："+strategy+"。原问题："+st.LastQuestion+"。评分："+scoreSummary(sc), false)
+		fu = nonEmpty(fu, fallbackFollowup(strategy))
 		return map[string]any{"response": fu, "state": st, "followup": fu}, nil
 	case "ask_next_question":
 		if len(st.QuestionPlan) == 0 {
 			st.QuestionPlan = fallbackPlan(st.MaxRounds)
 		}
 		if st.NextQuestionIndex >= min(st.MaxRounds, len(st.QuestionPlan)) {
-			return map[string]any{"response": finalSummary(st), "state": st}, nil
+			summary, streamedToUser := call(finalSummary(st), true)
+			return map[string]any{"response": summary, "state": st, "streamed_to_user": streamedToUser}, nil
 		}
 		scText := strings.TrimSpace(fmt.Sprint(getNodeField(payload, "score", "score_summary")))
 		fu := strings.TrimSpace(fmt.Sprint(getNodeField(payload, "followup", "followup")))

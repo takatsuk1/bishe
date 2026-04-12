@@ -157,6 +157,7 @@ const previewCards: PreviewCard[] = [
 
         <div class="landing-nav__actions">
           <RouterLink class="ghost-btn" to="/login">登录</RouterLink>
+          <RouterLink class="ghost-btn" to="/register">注册</RouterLink>
           <RouterLink class="btn-primary hero-cta" to="/login">立即体验</RouterLink>
         </div>
       </header>
@@ -339,6 +340,7 @@ const previewCards: PreviewCard[] = [
           <a href="#top">返回顶部</a>
           <a href="#capabilities">平台能力</a>
           <RouterLink to="/login">登录后台</RouterLink>
+          <RouterLink to="/register">注册账号</RouterLink>
         </div>
       </footer>
     </section>
