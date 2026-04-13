@@ -40,12 +40,6 @@ const assistantCards = computed<AssistantCenterCard[]>(() => [
     tags: ['路线规划', '地点服务', '出行建议'],
   },
   {
-    title: '日程规划助手',
-    agentId: 'schedulehelper',
-    description: '帮助用户梳理任务优先级、时间安排和执行节奏，适合个人效率场景。',
-    tags: ['日程安排', '优先级', '执行节奏'],
-  },
-  {
     title: '财务助手',
     agentId: 'financehelper',
     description: '支持记账、报表理解、财经信息辅助与理财建议，适合财务管理场景。',

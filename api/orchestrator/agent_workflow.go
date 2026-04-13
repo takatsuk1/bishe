@@ -457,7 +457,6 @@ func InitAgentWorkflows() error {
 		{"deepresearch", "深度检索助手", "深度检索助手，使用 Tavily 进行深度检索并整理答案", buildDeepResearchWorkflowDef},
 		{"urlreader", "网页阅读助手", "网页阅读助手，使用本地 Fetch MCP 读取网页内容并生成回答", buildURLReaderWorkflowDef},
 		{"lbshelper", "出行助手", "出行助手，仅使用 AMap 规划行程", buildLBSHelperWorkflowDef},
-		{"schedulehelper", "日程规划助手", "日程规划助手，输出任务优先级和时间安排建议", buildScheduleHelperWorkflowDef},
 		{"financehelper", "财务助手", "财务助手，支持记账、财务报告、财经资讯整理与理财建议", buildFinanceHelperWorkflowDef},
 		{"bazihelper", "八字助手", "八字助手，调用 Bazi MCP 工具生成命盘并输出结构化解读", buildBaziHelperWorkflowDef},
 		{"resumecustomizer", "简历优化助手", "简历优化助手，结合目标岗位与上传简历生成定制版简历", buildResumeCustomizerWorkflowDef},
@@ -534,7 +533,6 @@ func buildHostAgentWorkflow() AgentWorkflowDetail {
 			{AgentID: "deepresearch", Type: "downstream", Required: false, Description: "深度研究 Agent"},
 			{AgentID: "urlreader", Type: "downstream", Required: false, Description: "URL 读取 Agent"},
 			{AgentID: "lbshelper", Type: "downstream", Required: false, Description: "位置服务 Agent"},
-			{AgentID: "schedulehelper", Type: "downstream", Required: false, Description: "日程规划 Agent"},
 			{AgentID: "financehelper", Type: "downstream", Required: false, Description: "财务 Agent"},
 			{AgentID: "bazihelper", Type: "downstream", Required: false, Description: "八字助手 Agent"},
 			{AgentID: "resumecustomizer", Type: "downstream", Required: false, Description: "简历定制 Agent"},
@@ -881,23 +879,6 @@ func buildLBSHelperWorkflowDef() storage.WorkflowDefinition {
 	}
 }
 
-func buildScheduleHelperWorkflowDef() storage.WorkflowDefinition {
-	return storage.WorkflowDefinition{
-		StartNodeID: "start",
-		Nodes: []storage.NodeDef{
-			{ID: "start", Type: "start", Metadata: map[string]string{"ui.label": "开始", "ui.x": "120", "ui.y": "120"}},
-			{ID: "plan", Type: "chat_model", PreInput: "你是日程规划助手。请根据用户输入生成清晰可执行的日程安排（优先级、时间块、提醒点）。用户输入: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "生成计划", "ui.x": "320", "ui.y": "120", "ui.agent": "schedulehelper"}},
-			{ID: "refine", Type: "chat_model", PreInput: "请优化当前日程方案，补充风险提醒、备用计划和可量化目标。当前方案: {{plan.response}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "计划优化", "ui.x": "540", "ui.y": "120", "ui.agent": "schedulehelper"}},
-			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "760", "ui.y": "120"}},
-		},
-		Edges: []storage.EdgeDef{
-			{From: "start", To: "plan"},
-			{From: "plan", To: "refine"},
-			{From: "refine", To: "end"},
-		},
-	}
-}
-
 func buildFinanceHelperWorkflowDef() storage.WorkflowDefinition {
 	return storage.WorkflowDefinition{
 		StartNodeID: "N_start",
@@ -1010,23 +991,6 @@ func buildCareerRadarWorkflowDef() storage.WorkflowDefinition {
 			{From: "plan", To: "research"},
 			{From: "research", To: "analyze"},
 			{From: "analyze", To: "end"},
-		},
-	}
-}
-
-func buildWellnessCoachWorkflowDef() storage.WorkflowDefinition {
-	return storage.WorkflowDefinition{
-		StartNodeID: "start",
-		Nodes: []storage.NodeDef{
-			{ID: "start", Type: "start", Metadata: map[string]string{"ui.label": "开始", "ui.x": "120", "ui.y": "120"}},
-			{ID: "assess", Type: "chat_model", PreInput: "你是健康评估助手。请识别用户在作息、运动、饮食上的风险点。用户输入: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "状态评估", "ui.x": "320", "ui.y": "120", "ui.agent": "wellnesscoach"}},
-			{ID: "plan", Type: "chat_model", PreInput: "请基于健康评估结果输出未来 7 天可执行改进计划。评估结果: {{assess.response}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "健康计划", "ui.x": "540", "ui.y": "120", "ui.agent": "wellnesscoach"}},
-			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "760", "ui.y": "120"}},
-		},
-		Edges: []storage.EdgeDef{
-			{From: "start", To: "assess"},
-			{From: "assess", To: "plan"},
-			{From: "plan", To: "end"},
 		},
 	}
 }

@@ -36,6 +36,7 @@ type Agent struct {
 	AkshareTool        tools.Tool
 	akshareToolCatalog string
 	akshareToolSchema  string
+	akshareToolInfos   []tools.ToolInfo
 }
 
 type workflowNodeWorker struct {
@@ -140,7 +141,14 @@ func NewAgent() (*Agent, error) {
 	)
 	agent.akshareToolCatalog = "Available AkShare MCP tools: (discovery unavailable)"
 	agent.akshareToolSchema = "AkShare tool parameter schema: (discovery unavailable)"
-	agent.akshareToolCatalog, agent.akshareToolSchema = discoverAkshareToolCatalogAndSchema()
+	infos, cat, schema := discoverAkshareToolCatalogAndSchema()
+	agent.akshareToolCatalog = cat
+	agent.akshareToolSchema = schema
+	agent.akshareToolInfos = infos
+	logger.Infof("[TRACE] financehelper startup akshare catalog=%s", truncateText(agent.akshareToolCatalog, 800))
+	logger.Infof("[TRACE] financehelper startup akshare schema=%s", truncateText(agent.akshareToolSchema, 1200))
+	logger.Infof("[TRACE] financehelper startup akshare catalog=%s", truncateText(agent.akshareToolCatalog, 800))
+	logger.Infof("[TRACE] financehelper startup akshare schema=%s", truncateText(agent.akshareToolSchema, 1200))
 
 	engineCfg := orchestrator.Config{
 		DefaultTaskTimeoutSec: cfg.Orchestrator.DefaultTaskTimeoutSec,
@@ -713,6 +721,14 @@ func (a *Agent) executeAksharePurpose(ctx context.Context, taskID string, nodeID
 	if toolName == "" {
 		toolName, args = fallbackAkshareRequestV2(purpose)
 	}
+	// If args empty and we have schema for the tool, ask LLM to generate args
+	if len(args) == 0 && strings.TrimSpace(toolName) != "" {
+		if ti := a.findAkshareToolInfo(strings.TrimSpace(toolName)); ti != nil {
+			if gen := a.generateAkshareArguments(ctx, taskID, *ti, plan); gen != nil {
+				args = gen
+			}
+		}
+	}
 	if len(args) == 0 {
 		args = map[string]any{}
 	}
@@ -935,7 +951,7 @@ func normalizeSymbol(symbol string) string {
 	return symbol
 }
 
-func discoverAkshareToolCatalogAndSchema() (string, string) {
+func discoverAkshareToolCatalogAndSchema() ([]tools.ToolInfo, string, string) {
 	catalogFallback := "Available AkShare MCP tools: (discovery unavailable)"
 	schemaFallback := "AkShare tool parameter schema: (discovery unavailable)"
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -943,17 +959,17 @@ func discoverAkshareToolCatalogAndSchema() (string, string) {
 
 	command, args, err := tools.EnsureUvToolInstalled(ctx, "uvx", []string{"akshare-one-mcp"})
 	if err != nil {
-		return catalogFallback, schemaFallback
+		return nil, catalogFallback, schemaFallback
 	}
 	client, err := tools.ConnectMCPStdio(ctx, command, args)
 	if err != nil {
-		return catalogFallback, schemaFallback
+		return nil, catalogFallback, schemaFallback
 	}
 	defer func() { _ = client.Close() }()
 
 	infos, err := client.ListTools(ctx)
 	if err != nil || len(infos) == 0 {
-		return catalogFallback, schemaFallback
+		return nil, catalogFallback, schemaFallback
 	}
 	names := make([]string, 0, len(infos))
 	schemaLines := make([]string, 0, len(infos))
@@ -965,12 +981,90 @@ func discoverAkshareToolCatalogAndSchema() (string, string) {
 		schemaLines = append(schemaLines, formatAkshareToolSchemaLine(info))
 	}
 	if len(names) == 0 {
-		return catalogFallback, schemaFallback
+		return nil, catalogFallback, schemaFallback
 	}
 	if len(schemaLines) == 0 {
 		schemaLines = append(schemaLines, "(schema unavailable)")
 	}
-	return "Available AkShare MCP tools: " + strings.Join(uniqueStrings(names), ", "),
+
+	// convert RemoteToolInfo -> tools.ToolInfo
+	toolInfos := make([]tools.ToolInfo, 0, len(infos))
+	for _, ri := range infos {
+		ti := tools.ToolInfo{
+			Name:        strings.TrimSpace(ri.Name),
+			Type:        tools.ToolTypeFunction,
+			Description: strings.TrimSpace(ri.Description),
+			Parameters:  []tools.ToolParameter{},
+		}
+		// try to parse input schema properties
+		if props, ok := ri.InputSchema["properties"].(map[string]any); ok {
+			// collect required set
+			reqSet := map[string]bool{}
+			if rawReq, ok := ri.InputSchema["required"]; ok {
+				switch arr := rawReq.(type) {
+				case []any:
+					for _, it := range arr {
+						if s := strings.TrimSpace(fmt.Sprint(it)); s != "" {
+							reqSet[s] = true
+						}
+					}
+				case []string:
+					for _, it := range arr {
+						if s := strings.TrimSpace(it); s != "" {
+							reqSet[s] = true
+						}
+					}
+				}
+			}
+			for k, raw := range props {
+				name := strings.TrimSpace(k)
+				if name == "" {
+					continue
+				}
+				prop, _ := raw.(map[string]any)
+				ptype := tools.ParamTypeString
+				if t, ok := prop["type"].(string); ok {
+					switch strings.ToLower(strings.TrimSpace(t)) {
+					case "string":
+						ptype = tools.ParamTypeString
+					case "number", "integer", "float":
+						ptype = tools.ParamTypeNumber
+					case "boolean":
+						ptype = tools.ParamTypeBoolean
+					case "object":
+						ptype = tools.ParamTypeObject
+					case "array":
+						ptype = tools.ParamTypeArray
+					default:
+						ptype = tools.ParamTypeString
+					}
+				}
+				desc := ""
+				if d, ok := prop["description"].(string); ok {
+					desc = d
+				}
+				defVal := any(nil)
+				if dv, ok := prop["default"]; ok {
+					defVal = dv
+				}
+				enumVals := []any{}
+				if ev, ok := prop["enum"].([]any); ok {
+					enumVals = ev
+				}
+				ti.Parameters = append(ti.Parameters, tools.ToolParameter{
+					Name:        name,
+					Type:        ptype,
+					Required:    reqSet[name],
+					Description: desc,
+					Default:     defVal,
+					Enum:        enumVals,
+				})
+			}
+		}
+		toolInfos = append(toolInfos, ti)
+	}
+
+	return toolInfos, "Available AkShare MCP tools: " + strings.Join(uniqueStrings(names), ", "),
 		"AkShare tool parameter schema:\n" + strings.Join(schemaLines, "\n")
 }
 
@@ -1100,6 +1194,99 @@ func parseAkshareToolNames(catalog string) []string {
 		}
 	}
 	return uniqueStrings(out)
+}
+
+func (a *Agent) findAkshareToolInfo(name string) *tools.ToolInfo {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	for _, ti := range a.akshareToolInfos {
+		if strings.EqualFold(strings.TrimSpace(ti.Name), name) {
+			cur := ti
+			return &cur
+		}
+	}
+	return nil
+}
+
+func (a *Agent) generateAkshareArguments(ctx context.Context, taskID string, ti tools.ToolInfo, plan financePlan) map[string]any {
+	var b strings.Builder
+	b.WriteString("你是金融数据工具参数生成助手。\n")
+	b.WriteString("目标子工具：")
+	b.WriteString(ti.Name)
+	b.WriteString("\n说明：")
+	b.WriteString(ti.Description)
+	b.WriteString("\n参数：\n")
+	for _, p := range ti.Parameters {
+		req := "可选"
+		if p.Required {
+			req = "必填"
+		}
+		b.WriteString(fmt.Sprintf("- %s (%s) : %s\n", p.Name, req, p.Description))
+	}
+	b.WriteString("\n请根据计划生成该工具调用的 JSON 参数对象，仅输出一个 JSON 对象，不要其它文本。计划摘要：\n")
+	summary := strings.TrimSpace(plan.Summary)
+	if summary == "" {
+		summary = plan.Action
+	}
+	b.WriteString(summary)
+
+	baseURL := strings.TrimSpace(a.llmClient.BaseURL)
+	apiKey := strings.TrimSpace(a.llmClient.APIKey)
+	model := strings.TrimSpace(a.chatModel)
+	client := llm.NewClient(baseURL, apiKey)
+	resp, err := client.ChatCompletion(ctx, model, []llm.Message{{Role: "user", Content: b.String()}}, nil, nil)
+	if err != nil {
+		logger.Infof("[TRACE] financehelper.generateAkshareArguments llm error=%v", err)
+		return nil
+	}
+	parsed := extractToolCall(resp)
+	if args, ok := parsed["arguments"].(map[string]any); ok && len(args) > 0 {
+		return args
+	}
+	if len(parsed) > 0 {
+		out := map[string]any{}
+		hasParam := false
+		for _, p := range ti.Parameters {
+			if v, ok := parsed[p.Name]; ok && v != nil {
+				out[p.Name] = v
+				hasParam = true
+			}
+		}
+		if hasParam {
+			return out
+		}
+	}
+	return nil
+}
+
+func extractToolCall(raw string) map[string]any {
+	out := map[string]any{}
+	candidate := strings.TrimSpace(raw)
+	if strings.HasPrefix(candidate, "```") {
+		candidate = strings.TrimPrefix(candidate, "```json")
+		candidate = strings.TrimPrefix(candidate, "```")
+		candidate = strings.TrimSuffix(candidate, "```")
+		candidate = strings.TrimSpace(candidate)
+	}
+	if strings.Contains(candidate, "{") {
+		start := strings.Index(candidate, "{")
+		end := strings.LastIndex(candidate, "}")
+		if start >= 0 && end > start {
+			candidate = candidate[start : end+1]
+		}
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(candidate), &parsed); err == nil && len(parsed) > 0 {
+		for k, v := range parsed {
+			out[k] = v
+		}
+	}
+	if _, ok := out["query"]; !ok {
+		out["query"] = strings.TrimSpace(raw)
+	}
+	return out
 }
 
 func (a *Agent) akshareToolCandidates(primary string, purpose string) []string {

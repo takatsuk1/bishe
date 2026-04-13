@@ -17,7 +17,6 @@ func init() {
 	rootCmd.AddCommand(urlReaderCmd)
 	rootCmd.AddCommand(lbsHelperCmd)
 	rootCmd.AddCommand(deepResearchCmd)
-	rootCmd.AddCommand(scheduleHelperCmd)
 	rootCmd.AddCommand(financeHelperCmd)
 	rootCmd.AddCommand(baziHelperCmd)
 	rootCmd.AddCommand(resumeCustomizerCmd)

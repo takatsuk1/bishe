@@ -75,11 +75,7 @@ var (
 			} else {
 				startServer(serverConfig{name: "urlreader", addr: addr, handler: h})
 			}
-			if h, addr, err := buildScheduleHelperHTTPServer(); err != nil {
-				logger.Fatal(err)
-			} else {
-				startServer(serverConfig{name: "schedulehelper", addr: addr, handler: h})
-			}
+
 			if h, addr, err := buildFinanceHelperHTTPServer(); err != nil {
 				logger.Fatal(err)
 			} else {
@@ -106,7 +102,7 @@ var (
 				startServer(serverConfig{name: "careerradar", addr: addr, handler: h})
 			}
 
-			for _, name := range []string{"deepresearch", "lbshelper", "urlreader", "schedulehelper", "financehelper", "bazihelper", "resumecustomizer", "interviewsimulator", "careerradar"} {
+			for _, name := range []string{"deepresearch", "lbshelper", "urlreader", "financehelper", "bazihelper", "resumecustomizer", "interviewsimulator", "careerradar"} {
 				serverURL := getAgentServerURLByName(cfg.HostAgent.Agents, name)
 				if serverURL == "" {
 					logger.Fatalf("host_agent.agents missing server_url for %s", name)

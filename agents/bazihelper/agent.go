@@ -422,9 +422,9 @@ func buildExtractPlanPrompt(userQuery string, toolCatalog string) string {
 	sb.WriteString("9. getBaziDetail 必须在 arguments 里提供 gender，以及 solarDatetime 与 lunarDatetime 二者之一（推荐 solarDatetime）。\n")
 	sb.WriteString("10. getSolarTimes 必须在 arguments 里提供 bazi 字符串（四柱天干地支，字间空格）。\n")
 	sb.WriteString("11. 处理相对时间：当用户提到「今天」、「明天」、「后天」、「昨天」、「前天」等相对时间时，请根据当前日期计算出准确的日期，并转换为 ISO 时间字符串。\n")
-	sb.WriteString("12. 时间计算示例：如果今天是 2026-04-12，那么昨天是 2026-04-11，前天是 2026-04-10，明天是 2026-04-13，后天是 2026-04-14。\n")
-	sb.WriteString("当前日期：")
-	sb.WriteString(time.Now().Format("2006-01-02"))
+	sb.WriteString("12. 时间计算规则例：首先要准确获取当前日期，然后根据用户问题计算出目标日期。\n")
+	sb.WriteString("当前时间: ")
+	sb.WriteString(time.Now().Format("2006-01-02 15:04:05"))
 	sb.WriteString("\n")
 	sb.WriteString("用户问题:\n")
 	sb.WriteString(strings.TrimSpace(userQuery))
@@ -762,26 +762,8 @@ func normalizeBaziArguments(toolName string, args map[string]any, userQuery stri
 		}
 	case "getChineseCalendar":
 		if isEmptyBaziArg(args["solarDatetime"]) {
-			// 处理相对时间
-			userQueryLower := strings.ToLower(userQuery)
-			now := time.Now()
-			var targetTime time.Time
-
-			if strings.Contains(userQueryLower, "今天") {
-				targetTime = now
-			} else if strings.Contains(userQueryLower, "明天") {
-				targetTime = now.AddDate(0, 0, 1)
-			} else if strings.Contains(userQueryLower, "后天") {
-				targetTime = now.AddDate(0, 0, 2)
-			} else if strings.Contains(userQueryLower, "昨天") {
-				targetTime = now.AddDate(0, 0, -1)
-			} else if strings.Contains(userQueryLower, "前天") {
-				targetTime = now.AddDate(0, 0, -2)
-			} else {
-				targetTime = now
-			}
-
-			solarDatetime := targetTime.Format(time.RFC3339)
+			// 使用当前时间作为默认值
+			solarDatetime := time.Now().Format(time.RFC3339)
 			logger.Infof("[DEBUG][bazihelper] normalizeBaziArguments getChineseCalendar solarDatetime=%q (userQuery=%q)", solarDatetime, userQuery)
 			args["solarDatetime"] = solarDatetime
 		}

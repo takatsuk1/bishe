@@ -32,8 +32,6 @@ host_agent:
       server_url: http://127.0.0.1:9991
     - name: lbshelper
       server_url: http://127.0.0.1:9992
-    - name: schedulehelper
-      server_url: http://127.0.0.1:9994
     - name: financehelper
       server_url: http://127.0.0.1:9995
     - name: bazihelper
@@ -54,8 +52,6 @@ openai_connector:
       server_url: http://127.0.0.1:9991
     - name: lbshelper
       server_url: http://127.0.0.1:9992
-    - name: schedulehelper
-      server_url: http://127.0.0.1:9994
     - name: financehelper
       server_url: http://127.0.0.1:9995
     - name: bazihelper

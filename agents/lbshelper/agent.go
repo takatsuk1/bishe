@@ -32,6 +32,7 @@ type Agent struct {
 	chatModel          string
 	AmapTool           tools.Tool
 	amapToolCatalog    string
+	amapToolInfos      []tools.ToolInfo
 }
 
 type workflowNodeWorker struct {
@@ -97,9 +98,32 @@ func NewAgent() (*Agent, error) {
 					names = append(names, info.Name)
 				}
 				agent.amapToolCatalog = "可用工具: " + strings.Join(names, ", ")
+				agent.amapToolInfos = infos
 			}
 		}
 		_ = mcpTool
+	}
+	logger.Infof("[TRACE] lbshelper startup amap tool catalog=%s", truncateText(agent.amapToolCatalog, 800))
+	if len(agent.amapToolInfos) > 0 {
+		// log a concise schema summary
+		var sb strings.Builder
+		for _, ti := range agent.amapToolInfos {
+			sb.WriteString(ti.Name)
+			sb.WriteString(": ")
+			if len(ti.Parameters) > 0 {
+				params := make([]string, 0, len(ti.Parameters))
+				for _, p := range ti.Parameters {
+					req := "optional"
+					if p.Required {
+						req = "required"
+					}
+					params = append(params, fmt.Sprintf("%s(%s)", p.Name, req))
+				}
+				sb.WriteString(strings.Join(params, ", "))
+			}
+			sb.WriteString("; ")
+		}
+		logger.Infof("[TRACE] lbshelper startup amap tool schemas=%s", truncateText(sb.String(), 1200))
 	}
 
 	engineCfg := orchestrator.Config{
@@ -421,7 +445,18 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 	if _, ok := params["arguments"]; !ok {
 		params["arguments"] = map[string]any{}
 	}
+	// If arguments not provided, ask LLM to generate arguments based on discovered tool schema
 	params = normalizeAmapCallParams(params, userQuery)
+	// If arguments empty and we have schema info for the selected tool, generate via LLM
+	if args, _ := params["arguments"].(map[string]any); len(args) == 0 {
+		if tn, _ := params["tool_name"].(string); strings.TrimSpace(tn) != "" {
+			if ti := a.findAmapToolInfo(strings.TrimSpace(tn)); ti != nil {
+				if gen := a.generateAmapArguments(ctx, taskID, *ti, userQuery); gen != nil {
+					params["arguments"] = gen
+				}
+			}
+		}
+	}
 	params["task_id"] = taskID
 
 	tool, err := a.findToolByName(toolName)
@@ -881,6 +916,71 @@ func (a *Agent) findToolByName(name string) (tools.Tool, error) {
 	}
 }
 
+func (a *Agent) findAmapToolInfo(name string) *tools.ToolInfo {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	for _, ti := range a.amapToolInfos {
+		if strings.EqualFold(strings.TrimSpace(ti.Name), name) {
+			cur := ti
+			return &cur
+		}
+	}
+	return nil
+}
+
+func (a *Agent) generateAmapArguments(ctx context.Context, taskID string, ti tools.ToolInfo, userQuery string) map[string]any {
+	// Build a prompt describing the tool schema and ask LLM to output JSON arguments object
+	prompt := strings.Builder{}
+	prompt.WriteString("你是地图工具参数生成助手。\n")
+	prompt.WriteString("目标子工具：")
+	prompt.WriteString(ti.Name)
+	prompt.WriteString("\n说明：")
+	prompt.WriteString(ti.Description)
+	prompt.WriteString("\n参数：\n")
+	for _, p := range ti.Parameters {
+		req := "可选"
+		if p.Required {
+			req = "必填"
+		}
+		prompt.WriteString(fmt.Sprintf("- %s (%s) : %s\n", p.Name, req, p.Description))
+	}
+	prompt.WriteString("\n请根据用户问题生成该工具调用的 JSON 参数对象，仅输出一个 JSON 对象，不要其它文本。用户问题:\n")
+	prompt.WriteString(userQuery)
+
+	baseURL := strings.TrimSpace(a.llmClient.BaseURL)
+	apiKey := strings.TrimSpace(a.llmClient.APIKey)
+	model := strings.TrimSpace(a.chatModel)
+	client := llm.NewClient(baseURL, apiKey)
+	resp, err := client.ChatCompletion(ctx, model, []llm.Message{{Role: "user", Content: prompt.String()}}, nil, nil)
+	if err != nil {
+		logger.Infof("[TRACE] lbshelper.generateAmapArguments llm error=%v", err)
+		return nil
+	}
+	// parse JSON object from resp
+	parsed := extractToolCall(resp)
+	if args, ok := parsed["arguments"].(map[string]any); ok && len(args) > 0 {
+		return args
+	}
+	// maybe LLM returned just the object
+	if len(parsed) > 0 {
+		// if parsed contains standard parameter keys, return parsed
+		hasParam := false
+		out := map[string]any{}
+		for _, p := range ti.Parameters {
+			if v, ok := parsed[p.Name]; ok && v != nil {
+				out[p.Name] = v
+				hasParam = true
+			}
+		}
+		if hasParam {
+			return out
+		}
+	}
+	return nil
+}
+
 func withTaskManager(ctx context.Context, m internaltm.Manager) context.Context {
 	if ctx == nil || m == nil {
 		return ctx
@@ -1237,6 +1337,11 @@ func buildExtractRoutePrompt(userQuery string, toolCatalog string) string {
 	prompt := strings.Builder{}
 	prompt.WriteString("你是地图路径规划助手。\n")
 	prompt.WriteString("任务: 从用户问题中提取路径规划核心文本，并自主决定需要调用哪些 AMap MCP 子工具与参数。\n")
+	prompt.WriteString("处理相对时间：当用户提到「今天」、「明天」、「后天」、「昨天」、「前天」等相对时间时，请根据当前日期计算出准确的日期，并转换为 ISO 时间字符串。\n")
+	prompt.WriteString("时间计算规则例：首先要准确获取当前日期，然后根据用户问题计算出目标日期。\n")
+	prompt.WriteString("当前时间: ")
+	prompt.WriteString(time.Now().Format("2006-01-02 15:04:05"))
+	prompt.WriteString("\n")
 	prompt.WriteString("可用 AMap MCP 工具信息: ")
 	prompt.WriteString(strings.TrimSpace(toolCatalog))
 	prompt.WriteString("\n")
