@@ -1343,8 +1343,10 @@ onBeforeUnmount(() => {
 }
 
 .monitor-body {
+  display: grid;
   grid-template-columns: minmax(0, 1fr) 380px;
   gap: 14px;
+  min-height: 680px;
 }
 
 .monitor-inspector {
@@ -1395,6 +1397,8 @@ onBeforeUnmount(() => {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(250, 251, 252, 0.94)),
     #fff;
+  overflow: auto;
+  position: relative;
 }
 
 .runtime-monitor__inspector-head {

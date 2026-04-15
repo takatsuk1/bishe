@@ -870,7 +870,7 @@ function buildRequest(conversation: Conversation, message: ChatMessage): ChatReq
       : ''
 
   return {
-    model: conversation.model,
+    model: selectedModel.value,
     conversation_id: conversation.id,
     messages: [...baseMessages, { role: 'user', content: `${message.content}${uploadHint}` }],
     stream: true,
@@ -1226,6 +1226,14 @@ function renderMarkdown(content: string): string {
           <strong :class="['chip', status]">{{ formatTaskState(status) }}</strong>
         </div>
         <div class="assistant-console__metric">
+          <span>当前助手</span>
+          <select v-model="selectedModel" class="agent-select">
+            <option v-for="agent in availableAgents" :key="agent.value" :value="agent.value">
+              {{ agent.label }}
+            </option>
+          </select>
+        </div>
+        <div class="assistant-console__metric">
           <span>任务编号</span>
           <strong>{{ activeConversation.taskId ?? '—' }}</strong>
         </div>
@@ -1285,7 +1293,7 @@ function renderMarkdown(content: string): string {
           </div>
           <div class="assistant-console__main-badges">
             <span class="chip tiny">{{ selectedAgentMeta?.label ?? selectedModel }}</span>
-            <span class="chip tiny queued">附件 {{ activeAttachmentCount }}</span>
+            <span v-if="activeAttachmentCount > 0" class="chip tiny queued">附件 {{ activeAttachmentCount }}</span>
           </div>
         </header>
 
@@ -1495,6 +1503,22 @@ function renderMarkdown(content: string): string {
 .assistant-console__metric span {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.agent-select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.74);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.agent-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(95, 138, 120, 0.1);
 }
 
 .assistant-console__metric strong {

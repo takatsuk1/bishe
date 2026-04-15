@@ -385,9 +385,11 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 		params["task_id"] = taskID
 	}
 	if strings.EqualFold(toolName, "tavily") {
+		keywordFromExtract := false
 		if extractOut, ok := payload["N_extract_keywords"].(map[string]any); ok {
 			if extracted := strings.TrimSpace(fmt.Sprint(extractOut["response"])); extracted != "" {
 				params["query"] = extracted
+				keywordFromExtract = true
 			}
 		}
 		if _, ok := params["api_key"]; !ok {
@@ -402,7 +404,11 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 		q := strings.TrimSpace(fmt.Sprint(params["query"]))
 		orig := extractOriginalQuestion(payload)
 		q = trimForTavilyQuery(q)
-		q = anchorSearchQuery(q, orig)
+		if !keywordFromExtract {
+			q = anchorSearchQuery(q, orig)
+		}
+		// Ensure final query respects Tavily max length (400 chars).
+		q = trimForTavilyQuery(q)
 		params["query"] = q
 		round := extractLoopRound(payload)
 		if round > 0 {
@@ -1154,7 +1160,8 @@ func buildKeywordExtractionQuery(payload map[string]any) string {
 			"要求：\n" +
 			"1) 必须包含用户问题中的核心实体或专有名词。\n" +
 			"2) 禁止输出泛词（如：相关信息、背景信息、待确认主题、具体查询目标）。\n" +
-			"3) 只输出关键词，使用分号分隔，不要输出其他内容。\n\n" +
+			"3) 只输出关键词，使用分号分隔，不要输出其他内容。\n" +
+			"4) 最多输出不超过 3 个关键词。\n\n" +
 			"用户问题：\n" + orig
 	}
 	return "请基于用户问题与已检索信息，提取下一轮更具体的联网检索关键词。\n" +
@@ -1162,7 +1169,8 @@ func buildKeywordExtractionQuery(payload map[string]any) string {
 		"1) 必须包含用户问题中的核心实体或专有名词。\n" +
 		"2) 必须体现信息缺口（如创始人、业务、官网、最新动态、产品）。\n" +
 		"3) 禁止输出泛词（如：相关信息、背景信息、待确认主题、具体查询目标）。\n" +
-		"4) 只输出关键词，使用分号分隔，不要输出其他内容。\n\n" +
+		"4) 只输出关键词，使用分号分隔，不要输出其他内容。\n" +
+		"5) 最多输出不超过 3 个关键词。\n\n" +
 		"用户问题：\n" + orig + "\n\n已检索信息（摘要）：\n" + evidence
 }
 

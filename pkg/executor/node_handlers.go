@@ -22,14 +22,30 @@ func (e *InterpretiveExecutor) handleStartNode(ctx context.Context, wf *orchestr
 
 	nextNodeID := e.getNextNode(wf, node.ID, "")
 
+	// 创建output，包含started标志和用户输入
+	output := map[string]any{"started": true}
+
+	// 从shared中获取用户输入
+	query := firstNonEmptyString(
+		stringify(shared["query"]),
+		stringify(shared["text"]),
+		stringify(shared["input"]),
+	)
+
+	if query != "" {
+		// 将用户输入添加到output中
+		output["query"] = query
+	}
+
 	result := NodeExecutionResult{
 		NodeID:   node.ID,
 		NodeType: "start",
 		State:    ExecutionStateSucceeded,
+		Output:   output,
 		Duration: time.Since(start).Milliseconds(),
 	}
 
-	shared[node.ID] = map[string]any{"started": true}
+	shared[node.ID] = output
 
 	return result, nextNodeID, nil
 }

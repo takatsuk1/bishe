@@ -132,6 +132,81 @@ func TestGenerateWorkflowBuilder_PreservesInputSourceConfig(t *testing.T) {
 	}
 }
 
+func TestGenerateAgentCode_ToolInputMappingResolvesPayloadState(t *testing.T) {
+	g := NewCodeGenerator(GeneratorConfig{})
+	req := &AgentGenerateRequest{
+		AgentID: "demo_agent",
+		Name:    "Demo",
+		WorkflowDef: &executor.WorkflowDefinition{
+			WorkflowID:  "wf_mapping",
+			Name:        "wf_mapping",
+			StartNodeID: "start",
+			Nodes: []executor.NodeDef{
+				{ID: "start", Type: "start"},
+				{ID: "N_chat", Type: "chat_model"},
+				{ID: "N_tool", Type: "tool", Config: map[string]any{
+					"tool_name": "tavily",
+					"input_mapping": map[string]any{
+						"query": "N_chat",
+					},
+				}},
+				{ID: "end", Type: "end"},
+			},
+			Edges: []executor.EdgeDef{
+				{From: "start", To: "N_chat"},
+				{From: "N_chat", To: "N_tool"},
+				{From: "N_tool", To: "end"},
+			},
+		},
+		Tools: []ToolDefinition{{
+			ToolID:      "tavily",
+			Name:        "tavily",
+			Description: "demo",
+			ToolType:    tools.ToolTypeHTTP,
+			Config: map[string]any{
+				"method": "POST",
+				"url":    "https://example.com",
+			},
+			Parameters: []tools.ToolParameter{
+				{Name: "query", Type: tools.ParamTypeString, Required: true},
+			},
+		}},
+	}
+
+	code := g.generateAgentCode(req)
+
+	if !strings.Contains(code, "callTool(ctx, taskID, query, req.NodeConfig, req.Payload)") {
+		t.Fatalf("generated worker should pass payload into callTool, got: %s", code)
+	}
+	if !strings.Contains(code, "resolveGeneratedPayloadValue(payload, src)") {
+		t.Fatalf("generated callTool should resolve payload-backed input mappings, got: %s", code)
+	}
+	if !strings.Contains(code, "if normalized, ok := extractGeneratedStringCandidate(val, targetKey); ok {") {
+		t.Fatalf("generated callTool should extract response text from mapped node outputs before fallback, got: %s", code)
+	}
+	if !strings.Contains(code, "normalizeGeneratedToolParams(params, tool.Info().Parameters)") {
+		t.Fatalf("generated callTool should normalize mapped tool params, got: %s", code)
+	}
+}
+
+func TestToolParametersExpr_PreservesDefaultAndEnum(t *testing.T) {
+	expr := toolParametersExpr([]tools.ToolParameter{{
+		Name:        "search_depth",
+		Type:        tools.ParamTypeString,
+		Required:    false,
+		Description: "depth",
+		Default:     "basic",
+		Enum:        []any{"basic", "advanced"},
+	}})
+
+	if !strings.Contains(expr, `Default: "basic"`) {
+		t.Fatalf("toolParametersExpr should emit default values, got: %s", expr)
+	}
+	if !strings.Contains(expr, `Enum: []any{"basic", "advanced"}`) {
+		t.Fatalf("toolParametersExpr should emit enum values, got: %s", expr)
+	}
+}
+
 func TestGenerateWorkflowBuilder_DerivesConditionRoutesFromEdgeLabels(t *testing.T) {
 	g := NewCodeGenerator(GeneratorConfig{})
 	req := &AgentGenerateRequest{

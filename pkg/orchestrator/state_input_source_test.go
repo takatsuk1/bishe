@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -110,5 +111,42 @@ func TestUpdateSharedOutputStateKeepsNonExtractableOutputInHistory(t *testing.T)
 	}
 	if got := out["status_code"]; got != 200 {
 		t.Fatalf("status_code = %v, want 200", got)
+	}
+}
+
+func TestStartNodeHandlerSeedsLatestOutputWithInitialQuery(t *testing.T) {
+	e := &engine{}
+	run := &workflowRun{}
+	shared := map[string]any{
+		"query": "帮我搜一下鸣潮",
+		"text":  "帮我搜一下鸣潮",
+		"input": "帮我搜一下鸣潮",
+	}
+	node := Node{ID: "start", Type: NodeTypeStart}
+	nextIndex := map[string][]string{"start": {"chat"}}
+
+	res, next, err := startNodeHandler(context.Background(), e, nil, run, node, nextIndex, shared)
+	if err != nil {
+		t.Fatalf("startNodeHandler returned error: %v", err)
+	}
+	if next != "chat" {
+		t.Fatalf("next node = %q, want chat", next)
+	}
+	if res.State != TaskStateSucceeded {
+		t.Fatalf("state = %s, want %s", res.State, TaskStateSucceeded)
+	}
+
+	latest, ok := shared["latest_output"].(map[string]any)
+	if !ok {
+		t.Fatalf("latest_output missing or invalid type: %T", shared["latest_output"])
+	}
+	if got := latest["query"]; got != "帮我搜一下鸣潮" {
+		t.Fatalf("latest_output.query = %v, want initial query", got)
+	}
+
+	prevNode := Node{ID: "chat", Config: map[string]any{"input_source": "previous"}}
+	gotPrev := selectNodeInputText(prevNode, shared)
+	if !strings.Contains(gotPrev, "帮我搜一下鸣潮") {
+		t.Fatalf("previous input should include initial query, got: %q", gotPrev)
 	}
 }

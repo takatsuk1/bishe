@@ -444,9 +444,21 @@ func startNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *workflow
 	if nextErr != nil {
 		return NodeRunResult{NodeID: node.ID, State: TaskStateFailed, ErrorMsg: nextErr.Error()}, "", nextErr
 	}
-	// 设置输出
-	out := map[string]any{"next": nextNodeID}
-	shared[node.ID] = out
+	// 对齐解释执行器：start 节点也要把初始用户输入写入输出态，
+	// 这样首个 input_source=previous 的节点能拿到用户输入。
+	out := map[string]any{
+		"started": true,
+		"next":    nextNodeID,
+	}
+	q := firstNonEmptyString(
+		mapString(shared, "query"),
+		mapString(shared, "text"),
+		mapString(shared, "input"),
+	)
+	if q != "" {
+		out["query"] = q
+	}
+	updateSharedOutputState(shared, node.ID, out)
 	return NodeRunResult{NodeID: node.ID, State: TaskStateSucceeded, Output: out}, nextNodeID, nil
 }
 
@@ -458,7 +470,7 @@ func endNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *workflowRu
 	e.setRunProgress(run, node.ID, "")
 	// 设置输出
 	out := map[string]any{"ended": true}
-	shared[node.ID] = out
+	updateSharedOutputState(shared, node.ID, out)
 	return NodeRunResult{NodeID: node.ID, State: TaskStateSucceeded, Output: out}, "", nil
 }
 
@@ -1212,6 +1224,7 @@ func updateSharedOutputState(shared map[string]any, nodeID string, output map[st
 	}
 
 	shared["latest_output"] = cloneAnyMap(output)
+	shared[nodeID] = cloneAnyMap(output)
 	history, _ := shared["history_outputs"].([]any)
 	history = append(history, map[string]any{
 		"node_id": nodeID,

@@ -643,8 +643,8 @@ func (a *Agent) executeMySQLPurpose(ctx context.Context, taskID string, nodeID s
 		tableName = extractTableNameFromSQL(plan.EnsureTableSQL)
 	}
 	sqlList = append(sqlList, plan.SQLStatements...)
-	if purpose == "advice" && len(plan.SQLStatements) == 0 {
-		sqlList = append(sqlList, fmt.Sprintf("SELECT * FROM %s ORDER BY bill_date DESC, id DESC LIMIT 20", financeTableName(financeGuestUserID)))
+	if (purpose == "advice" || purpose == "report") && len(plan.SQLStatements) == 0 {
+		sqlList = append(sqlList, fmt.Sprintf("SELECT * FROM %s ORDER BY bill_date DESC, id DESC LIMIT 20", financeTableName(userID)))
 	}
 	if len(sqlList) == 0 {
 		return map[string]any{"response": "无需执行数据库操作", "records": []any{}}, nil
@@ -1635,6 +1635,8 @@ func (a *Agent) generateLedgerSQLBySchema(ctx context.Context, userQuery string,
 	sb.WriteString("\nSchema metadata JSON:\n")
 	sb.WriteString(string(schemaJSON))
 
+	start := time.Now()
+	logger.Infof("[TRACE] financehelper.ledger_llm start table=%s", rec.TableName)
 	resp, err := llm.NewClient(strings.TrimSpace(a.llmClient.BaseURL), strings.TrimSpace(a.llmClient.APIKey)).ChatCompletion(
 		ctx,
 		strings.TrimSpace(a.chatModel),
@@ -1642,9 +1644,12 @@ func (a *Agent) generateLedgerSQLBySchema(ctx context.Context, userQuery string,
 		nil,
 		nil,
 	)
+	dur := time.Since(start)
 	if err != nil {
+		logger.Infof("[TRACE] financehelper.ledger_llm failed table=%s dur=%s err=%v", rec.TableName, dur, err)
 		return nil, err
 	}
+	logger.Infof("[TRACE] financehelper.ledger_llm done table=%s dur=%s", rec.TableName, dur)
 	return parseSQLStatements(resp, rec.TableName), nil
 }
 

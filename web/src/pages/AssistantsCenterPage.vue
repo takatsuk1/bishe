@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import PageContainer from '../components/PageContainer.vue'
 import PageHeader from '../components/PageHeader.vue'
 import { AGENTS } from '../lib/agents'
+import { listAgents } from '../lib/orchestratorApi'
 
 type AssistantCenterCard = {
   title: string
@@ -13,8 +14,10 @@ type AssistantCenterCard = {
 }
 
 const searchKeyword = ref('')
+const userAgents = ref<AssistantCenterCard[]>([])
+const isLoading = ref(true)
 
-const assistantCards = computed<AssistantCenterCard[]>(() => [
+const staticAssistantCards = [
   {
     title: '主控编排助手',
     agentId: 'host',
@@ -69,7 +72,37 @@ const assistantCards = computed<AssistantCenterCard[]>(() => [
     description: '帮助识别岗位风险、推荐匹配岗位并提供求职判断支持。',
     tags: ['岗位匹配', '风险识别', '求职辅助'],
   },
-])
+]
+
+const assistantCards = computed<AssistantCenterCard[]>(() => {
+  // 合并静态助手和用户创建的助手，去重
+  const allCards = [...staticAssistantCards, ...userAgents.value]
+  const uniqueCards = new Map<string, AssistantCenterCard>()
+  
+  for (const card of allCards) {
+    uniqueCards.set(card.agentId, card)
+  }
+  
+  return Array.from(uniqueCards.values())
+})
+
+onMounted(async () => {
+  try {
+    isLoading.value = true
+    const agents = await listAgents()
+    // 转换API返回的agent信息为AssistantCenterCard格式
+    userAgents.value = agents.map(agent => ({
+      title: agent.name || agent.id,
+      agentId: agent.id,
+      description: agent.description || '用户创建的助手',
+      tags: ['用户创建'],
+    }))
+  } catch (error) {
+    console.error('获取助手列表失败:', error)
+  } finally {
+    isLoading.value = false
+  }
+})
 
 const filteredAssistants = computed(() => {
   const keyword = searchKeyword.value.trim().toLowerCase()
@@ -136,7 +169,7 @@ const assistantMap = computed(() => new Map(AGENTS.map((agent) => [agent.value, 
         <p class="assistant-center__toolbar-tip">点击卡片即可进入对应助手的对话控制台。</p>
       </section>
 
-      <section class="assistant-center__grid">
+      <section class="assistant-center__grid" v-if="!isLoading">
         <article v-for="assistant in filteredAssistants" :key="assistant.agentId" class="assistant-center__card module-section">
           <div class="assistant-center__card-head">
             <div>
@@ -181,6 +214,9 @@ const assistantMap = computed(() => new Map(AGENTS.map((agent) => [agent.value, 
             进入助手
           </RouterLink>
         </article>
+      </section>
+      <section v-else class="assistant-center__loading">
+        <p>加载助手中...</p>
       </section>
     </main>
   </PageContainer>
@@ -467,5 +503,22 @@ const assistantMap = computed(() => new Map(AGENTS.map((agent) => [agent.value, 
   .assistant-center__search {
     min-width: 100%;
   }
+}
+
+.assistant-center__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.82));
+  border-radius: 20px;
+  box-shadow: var(--shadow-soft);
+  padding: 18px;
+}
+
+.assistant-center__loading p {
+  font-size: 16px;
+  color: var(--text-muted);
+  margin: 0;
 }
 </style>
