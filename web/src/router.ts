@@ -6,6 +6,7 @@ import HomePage from './pages/HomePage.vue'
 import PlatformCapabilitiesPage from './pages/PlatformCapabilitiesPage.vue'
 import LoginPage from './pages/LoginPage.vue'
 import WorkspaceHomePage from './pages/WorkspaceHomePage.vue'
+import RegisterPage from './pages/RegisterPage.vue'
 import ChatPage from './pages/ChatPage.vue'
 import AssistantsCenterPage from './pages/AssistantsCenterPage.vue'
 import WorkflowPage from './pages/WorkflowPage.vue'
@@ -46,6 +47,7 @@ export const router = createRouter({
         { path: '', name: 'public-home', component: HomePage },
         { path: 'capabilities', name: 'public-capabilities', component: PlatformCapabilitiesPage },
         { path: 'login', name: 'public-login', component: LoginPage },
+        { path: 'register', name: 'public-register', component: RegisterPage },
       ],
     },
     {
@@ -93,7 +95,7 @@ export const router = createRouter({
     { path: '/workflow', redirect: '/workspace/orchestration' },
     { path: '/monitor', redirect: '/workspace/monitoring' },
     { path: '/profile', redirect: '/workspace/account' },
-    { path: '/register', redirect: '/login' },
+    
   ],
 })
 

@@ -1,0 +1,59 @@
+@startuml
+title 测试智能体时序图
+
+actor 用户 as User
+boundary "前端智能体页面" as Frontend
+control "编排接口\n/v1/orchestrator/user-agents/test" as API
+control "认证服务" as Auth
+database "MySQL 数据库" as DB
+control "后端工作流服务" as Executor
+control "后端工具服务" as ToolRegistry
+
+User -> Frontend : 点击“测试智能体”
+activate Frontend
+
+Frontend -> API : 提交测试请求\n(工作流定义或智能体ID、输入参数、令牌)
+activate API
+
+API -> Auth : 校验身份与权限
+activate Auth
+Auth --> API : 校验通过
+deactivate Auth
+
+alt 按工作流定义直接测试
+    API -> Executor : 传入临时工作流定义与输入参数
+    activate Executor
+else 按已有智能体测试
+    API -> DB : 读取用户智能体定义
+    activate DB
+    DB --> API : 返回智能体配置与 workflow_id
+    deactivate DB
+
+    API -> DB : 读取绑定工作流定义
+    activate DB
+    DB --> API : 返回工作流定义
+    deactivate DB
+
+    API -> Executor : 传入工作流定义与输入参数
+    activate Executor
+end
+
+Executor -> ToolRegistry : 加载当前用户可用工具
+activate ToolRegistry
+ToolRegistry --> Executor : 返回工具集合
+deactivate ToolRegistry
+
+Executor -> Executor : 解析工作流定义
+Executor -> Executor : 按节点推进执行流程
+Executor -> Executor : 调用聊天模型 / 工具节点
+Executor -> Executor : 汇总节点结果与最终输出
+
+Executor --> API : 返回测试结果
+deactivate Executor
+
+API --> Frontend : 返回执行状态、节点结果、最终输出
+Frontend --> User : 展示测试结果
+deactivate API
+deactivate Frontend
+
+@enduml

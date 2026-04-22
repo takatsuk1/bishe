@@ -289,7 +289,7 @@ func (s *MySQLStorage) ListMonitorEvents(ctx context.Context, q MonitorEventQuer
 		       IFNULL(error_message,''), duration_ms, created_at
 		FROM monitor_event
 		WHERE run_id = ?
-		ORDER BY created_at ASC
+		ORDER BY id ASC
 		LIMIT ? OFFSET ?
 	`, q.RunID, pageSize, offset)
 	if err != nil {
@@ -538,11 +538,11 @@ func (s *MySQLStorage) GetMonitorRunDetail(ctx context.Context, runID, userID st
 		SELECT e.status, COUNT(*)
 		FROM monitor_event e
 		JOIN (
-			SELECT node_id, MAX(created_at) AS max_created_at
+			SELECT node_id, MAX(id) AS max_id
 			FROM monitor_event
 			WHERE run_id = ? AND node_id IS NOT NULL AND node_id <> ''
 			GROUP BY node_id
-		) latest ON latest.node_id = e.node_id AND latest.max_created_at = e.created_at
+		) latest ON latest.node_id = e.node_id AND latest.max_id = e.id
 		WHERE e.run_id = ?
 		GROUP BY e.status
 	`, runID, runID)
@@ -565,7 +565,7 @@ func (s *MySQLStorage) GetMonitorRunDetail(ctx context.Context, runID, userID st
 			SELECT error_message
 			FROM monitor_event
 			WHERE run_id = ? AND error_message IS NOT NULL AND error_message <> ''
-			ORDER BY created_at DESC
+			ORDER BY id DESC
 			LIMIT 1
 		`, runID).Scan(&latestErr)
 		if err != nil && err != sql.ErrNoRows {

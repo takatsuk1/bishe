@@ -1,0 +1,70 @@
+@startuml
+title InterviewSimulator Agent 处理时序图
+
+actor 用户 as User
+boundary "前端页面" as Frontend
+control "InterviewSimulator Agent" as Agent
+control "start\n开始节点" as StartNode
+control "analyze\n聊天模型节点" as AnalyzeNode
+control "plan\n聊天模型节点" as PlanNode
+control "score\n聊天模型节点" as ScoreNode
+control "followup\n聊天模型节点" as FollowupNode
+control "question\n聊天模型节点" as QuestionNode
+control "end\n结束节点" as EndNode
+
+User -> Frontend : 提交面试背景/岗位/问题信息
+activate Frontend
+
+Frontend -> Agent : 发送输入参数
+activate Agent
+
+Agent -> StartNode : 进入 start
+activate StartNode
+StartNode --> Agent : 开始处理
+deactivate StartNode
+
+Agent -> AnalyzeNode : 进入 analyze\n按 analyze_profile 分析候选人画像
+activate AnalyzeNode
+AnalyzeNode --> Agent : 返回画像与关注点
+deactivate AnalyzeNode
+
+Agent -> PlanNode : 进入 plan\n按 plan_interview 规划多轮主问题
+activate PlanNode
+PlanNode --> Agent : 返回面试问题计划
+deactivate PlanNode
+
+Agent -> ScoreNode : 进入 score\n按 score_answer 评估当前回答
+activate ScoreNode
+ScoreNode --> Agent : 返回评分结果
+deactivate ScoreNode
+
+Agent -> FollowupNode : 进入 followup\n按 adaptive_followup 生成追问
+activate FollowupNode
+FollowupNode --> Agent : 返回追问内容
+deactivate FollowupNode
+
+Agent -> QuestionNode : 进入 question\n按 ask_next_question 输出下一轮主问题
+activate QuestionNode
+
+loop 流式推送内容
+    QuestionNode --> Frontend : 增量推送面试问题/评分/追问
+end
+
+QuestionNode --> Agent : 返回完整结果
+deactivate QuestionNode
+
+Agent -> EndNode : 进入 end
+activate EndNode
+EndNode --> Agent : 返回最终输出
+deactivate EndNode
+
+alt 存在有效输出
+    Agent --> Frontend : 返回面试模拟结果
+else 输出为空
+    Agent --> Frontend : 返回兜底提示
+end
+
+deactivate Agent
+Frontend --> User : 展示面试模拟结果
+deactivate Frontend
+@enduml

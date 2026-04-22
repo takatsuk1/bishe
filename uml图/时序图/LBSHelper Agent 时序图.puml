@@ -1,0 +1,50 @@
+@startuml
+title LBSHelper Agent 处理时序图
+
+actor 用户 as User
+boundary "前端页面" as Frontend
+control "LBSHelper Agent" as Agent
+control "工作流启动器\nStartWorkflow" as Starter
+control "地理任务识别/计划节点" as PlanNode
+control "amap 工具节点" as AmapNode
+control "AMap MCP 工具" as AmapTool
+control "结果整理聊天模型节点" as SummaryNode
+
+User -> Frontend : 提交地点/路线问题
+activate Frontend
+
+Frontend -> Agent : 发送用户输入
+activate Agent
+
+Agent -> Starter : 启动默认 LBS 工作流
+activate Starter
+Starter --> Agent : 返回工作流上下文
+deactivate Starter
+
+Agent -> PlanNode : 识别地理任务并生成地图服务调用计划
+activate PlanNode
+PlanNode --> Agent : 返回 tool_name 与 arguments 计划
+deactivate PlanNode
+
+loop 按计划执行地图子工具
+    Agent -> AmapNode : 进入 amap 工具节点
+    activate AmapNode
+    AmapNode -> AmapTool : 根据 tool_name 执行地点检索/路线规划/周边查询
+    activate AmapTool
+    AmapTool --> AmapNode : 返回地图查询结果
+    deactivate AmapTool
+    AmapNode --> Agent : 返回单次调用结果
+    deactivate AmapNode
+end
+
+Agent -> SummaryNode : 汇总多次调用结果并生成最终地点/路线结论
+activate SummaryNode
+SummaryNode --> Agent : 返回最终答案
+deactivate SummaryNode
+
+Agent --> Frontend : 返回结果
+deactivate Agent
+
+Frontend --> User : 展示地图服务结果
+deactivate Frontend
+@enduml

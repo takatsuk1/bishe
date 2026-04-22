@@ -757,7 +757,11 @@ func (e *engine) setRunProgress(run *workflowRun, nodeID, taskID string) {
 	run.result.CurrentNodeID = nodeID
 	run.result.CurrentTaskID = taskID
 	run.result.UpdatedAt = time.Now()
+	runID := run.result.RunID
 	run.mu.Unlock()
+	if e.monitorSvc != nil {
+		_ = e.monitorSvc.UpdateCurrentNode(context.Background(), runID, nodeID)
+	}
 }
 
 // waitIfPaused 等待如果任务已暂停
@@ -809,6 +813,7 @@ func (e *engine) finishRunWithResults(run *workflowRun, state RunState, errMsg s
 
 	if e.monitorSvc != nil {
 		status := runStateToMonitorStatus(state)
+		_ = e.monitorSvc.UpdateCurrentNode(context.Background(), runID, "")
 		_ = e.monitorSvc.FinishRun(context.Background(), monitor.FinishRunInput{
 			RunID:        runID,
 			Status:       status,

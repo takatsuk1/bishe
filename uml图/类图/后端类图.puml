@@ -1,0 +1,214 @@
+@startuml
+title 后端整体全局类图
+
+skinparam shadowing false
+skinparam linetype ortho
+skinparam classAttributeIconSize 0
+hide circle
+
+interface Agent {
+  + Run(ctx, input): Result
+}
+
+interface Tool {
+  + Name(): string
+  + Call(ctx, args): Result
+}
+
+class ChatServer {
+  - authService: AuthService
+  - executor: WorkflowExecutor
+  - storage: Storage
+  + ChatCompletion(req): Response
+  + StreamChatCompletion(req): Stream
+}
+
+class OrchestratorAPI {
+  - authService: AuthService
+  - executor: WorkflowExecutor
+  - runManager: RunManager
+  - storage: Storage
+  + SaveWorkflow(req): Result
+  + TestUserAgent(req): Result
+  + PublishUserAgent(req): Result
+}
+
+class AuthServer {
+  - authService: AuthService
+  - storage: Storage
+  + Register(req): Result
+  + Login(req): Result
+  + Refresh(req): Result
+  + UpdateProfile(req): Result
+}
+
+class MonitorServer {
+  - authService: AuthService
+  - monitorService: MonitorService
+  + GetOverview(): Result
+  + GetRuns(): Result
+  + GetAlerts(): Result
+}
+
+class AdminServer {
+  - authService: AuthService
+  - storage: Storage
+  + ListUsers(): Result
+  + UpdateUserRoles(req): Result
+  + UpdateUserStatus(req): Result
+}
+
+class WorkflowExecutor {
+  - toolRegistry: ToolRegistry
+  - storage: Storage
+  - runManager: RunManager
+  + ExecuteWorkflow(def, input): Result
+  + ExecuteWorkflowFromDefinition(def, input): Result
+}
+
+class RunManager {
+  - storage: Storage
+  + CreateRun(input): Run
+  + UpdateRunStatus(id, status): void
+  + RecordEvent(event): void
+  + CreateAlert(alert): void
+}
+
+class HostAgent {
+  - toolRegistry: ToolRegistry
+  + Run(ctx, input): Result
+}
+
+abstract class SpecializedAgent {
+  - toolRegistry: ToolRegistry
+  + Run(ctx, input): Result
+}
+
+class DeepResearchAgent
+class URLReaderAgent
+class LBSHelperAgent
+class FinanceHelperAgent
+class BaziHelperAgent
+class ResumeCustomizerAgent
+class InterviewSimulatorAgent
+class CareerRadarAgent
+
+class HTTPTool {
+  - method: string
+  - url: string
+  + Name(): string
+  + Call(ctx, args): Result
+}
+
+class MCPTool {
+  - config: MCPToolConfig
+  + Name(): string
+  + Call(ctx, args): Result
+}
+
+class ToolRegistry {
+  - tools: map
+  + RegisterTool(tool): void
+  + GetTool(name): Tool
+  + ListTools(): []Tool
+}
+
+class Storage {
+  + SaveWorkflow(def): void
+  + GetWorkflow(id): WorkflowDefinition
+  + SaveDraftWorkflow(id, draft): void
+  + DeleteDraftWorkflow(id): void
+  + SaveRun(run): void
+  + SaveEvent(event): void
+  + SaveAlert(alert): void
+}
+
+class MonitorService {
+  - storage: Storage
+  + GetOverview(): Overview
+  + GetRunDetail(id): RunDetail
+  + GetAlerts(): []Alert
+}
+
+class AuthService {
+  - storage: Storage
+  + ValidateToken(token): User
+  + Register(req): User
+  + Login(req): AuthResult
+  + UpdateProfile(req): User
+  + ChangePassword(req): Result
+}
+
+class WorkflowDefinition {
+  + ID: string
+  + Name: string
+  + StartNodeID: string
+  + Nodes: []NodeDef
+  + Edges: []EdgeDef
+}
+
+class NodeDef {
+  + ID: string
+  + Type: string
+  + Name: string
+  + Config: map
+}
+
+class EdgeDef {
+  + ID: string
+  + From: string
+  + To: string
+  + Label: string
+}
+
+ChatServer --> AuthService : 依赖
+ChatServer --> WorkflowExecutor : 依赖
+ChatServer --> Storage : 依赖
+
+OrchestratorAPI --> AuthService : 依赖
+OrchestratorAPI --> WorkflowExecutor : 依赖
+OrchestratorAPI --> RunManager : 依赖
+OrchestratorAPI --> Storage : 依赖
+
+AuthServer --> AuthService : 依赖
+AuthServer --> Storage : 依赖
+
+MonitorServer --> AuthService : 依赖
+MonitorServer --> MonitorService : 依赖
+
+AdminServer --> AuthService : 依赖
+AdminServer --> Storage : 依赖
+
+WorkflowExecutor --> ToolRegistry : 依赖
+WorkflowExecutor --> RunManager : 依赖
+WorkflowExecutor --> Storage : 依赖
+WorkflowExecutor *-- WorkflowDefinition
+WorkflowDefinition *-- NodeDef
+WorkflowDefinition *-- EdgeDef
+
+RunManager --> Storage : 依赖
+MonitorService --> Storage : 依赖
+AuthService --> Storage : 依赖
+
+Agent <|.. HostAgent
+Agent <|.. SpecializedAgent
+
+SpecializedAgent <|-- DeepResearchAgent
+SpecializedAgent <|-- URLReaderAgent
+SpecializedAgent <|-- LBSHelperAgent
+SpecializedAgent <|-- FinanceHelperAgent
+SpecializedAgent <|-- BaziHelperAgent
+SpecializedAgent <|-- ResumeCustomizerAgent
+SpecializedAgent <|-- InterviewSimulatorAgent
+SpecializedAgent <|-- CareerRadarAgent
+
+HostAgent --> ToolRegistry : 使用
+SpecializedAgent --> ToolRegistry : 使用
+
+Tool <|.. HTTPTool
+Tool <|.. MCPTool
+ToolRegistry o-- Tool
+
+HostAgent ..> Agent : 调度
+CareerRadarAgent ..> DeepResearchAgent : 调用
+@enduml

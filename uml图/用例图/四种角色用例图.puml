@@ -1,0 +1,143 @@
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam actorStyle awesome
+
+title 多智能体平台总体用例图
+
+actor "访客型用户\nviewer" as Viewer
+actor "普通用户\nuser" as User
+actor "运维人员\noperator" as Operator
+actor "系统管理员\nadmin" as Admin
+
+User --|> Viewer
+Operator --|> Viewer
+Admin --|> Operator
+
+rectangle "基于大模型的多智能体助手平台" {
+
+  '======================
+  ' 基础认证与使用
+  '======================
+  usecase "注册" as UC_Register
+  usecase "登录" as UC_Login
+  usecase "退出登录" as UC_Logout
+  usecase "查看个人资料" as UC_Profile
+  usecase "修改个人信息" as UC_EditProfile
+  usecase "修改密码" as UC_ChangePwd
+
+  '======================
+  ' 聊天与系统内置Agent协同
+  '======================
+  usecase "发起智能对话" as UC_Chat
+  usecase "查看会话记录" as UC_Session
+  usecase "调用 Host Agent" as UC_Host
+  usecase "调用 DeepResearch Agent" as UC_DeepResearch
+  usecase "调用 URLReader Agent" as UC_URLReader
+  usecase "调用 LBSHelper Agent" as UC_LBS
+  usecase "调用 FinanceHelper Agent" as UC_Finance
+  usecase "调用 BaziHelper Agent" as UC_Bazi
+  usecase "调用 ResumeCustomizer Agent" as UC_Resume
+  usecase "调用 InterviewSimulator Agent" as UC_Interview
+  usecase "调用 CareerRadar Agent" as UC_Career
+
+  '======================
+  ' 平台资源查看
+  '======================
+  usecase "查看平台智能体列表" as UC_ViewAgents
+  usecase "查看平台工具列表" as UC_ViewTools
+  usecase "查看工作流列表" as UC_ViewWorkflows
+  usecase "查看工作流详情" as UC_WorkflowDetail
+
+  '======================
+  ' 工作流管理
+  '======================
+  usecase "创建/编辑/保存/删除工作流" as UC_SaveWorkflow
+  usecase "启动工作流" as UC_RunWorkflow
+
+  '======================
+  ' 用户工具管理
+  '======================
+  usecase "管理用户工具\n(查看/创建/编辑/删除)" as UC_ManageUserTools
+
+  '======================
+  ' 用户智能体管理
+  '======================
+  usecase "管理用户智能体\n(查看/创建/编辑/删除/测试/发布/运行控制)" as UC_ManageUserAgents
+
+  '======================
+  ' 监控与告警
+  '======================
+  usecase "查看监控概览" as UC_MonitorOverview
+  usecase "查看运行监控列表" as UC_MonitorRuns
+  usecase "查看告警列表" as UC_Alerts
+  usecase "处理告警" as UC_HandleAlert
+
+  '======================
+  ' 后台管理
+  '======================
+  usecase "查看用户列表" as UC_UserList
+  usecase "管理用户\n(查看/修改状态/分配角色)" as UC_ManageUser
+}
+
+'======================
+' 角色与用例的关联
+'======================
+
+' viewer
+Viewer -- UC_Login
+Viewer -- UC_Register
+Viewer -- UC_Logout
+Viewer -- UC_Profile
+Viewer -- UC_EditProfile
+Viewer -- UC_ChangePwd
+Viewer -- UC_Chat
+Viewer -- UC_Session
+Viewer -- UC_ViewAgents
+Viewer -- UC_ViewTools
+Viewer -- UC_ViewWorkflows
+Viewer -- UC_WorkflowDetail
+
+' user
+User -- UC_SaveWorkflow
+User -- UC_RunWorkflow
+User -- UC_ManageUserTools
+User -- UC_ManageUserAgents
+
+' operator
+Operator -- UC_MonitorOverview
+Operator -- UC_MonitorRuns
+Operator -- UC_Alerts
+Operator -- UC_HandleAlert
+
+' admin
+Admin -- UC_UserList
+Admin -- UC_ManageUser
+
+'======================
+' 用例之间的关系
+'======================
+
+' 聊天一定经过 Host Agent
+UC_Chat ..> UC_Host : <<include>>
+
+' Host Agent 条件调用专业 Agent
+UC_DeepResearch ..> UC_Host : <<extend>>
+UC_URLReader ..> UC_Host : <<extend>>
+UC_LBS ..> UC_Host : <<extend>>
+UC_Finance ..> UC_Host : <<extend>>
+UC_Bazi ..> UC_Host : <<extend>>
+UC_Resume ..> UC_Host : <<extend>>
+UC_Interview ..> UC_Host : <<extend>>
+UC_Career ..> UC_Host : <<extend>>
+
+' 工作流详情通常建立在查看工作流列表基础上
+
+' 工作流详情通常建立在查看工作流列表基础上
+UC_WorkflowDetail ..> UC_ViewWorkflows : <<extend>>
+
+' 用户详情建立在查看用户列表基础上
+UC_ManageUser ..> UC_UserList : <<extend>>
+
+@enduml

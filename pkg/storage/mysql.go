@@ -842,9 +842,11 @@ func (s *MySQLStorage) GetPublishedAgents(ctx context.Context) ([]UserAgentDefin
 }
 
 func (s *MySQLStorage) CreateUser(ctx context.Context, user *UserAccount) error {
+	// role_code column exists in the DB but not on the UserAccount struct.
+	// Always insert with default role_code = "user" to avoid missing-column errors.
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO users (user_id, username, display_name, password_hash, status) VALUES (?, ?, ?, ?, ?)",
-		user.UserID, user.Username, user.DisplayName, user.PasswordHash, user.Status)
+		"INSERT INTO users (user_id, username, display_name, password_hash, status, role_code) VALUES (?, ?, ?, ?, ?, ?)",
+		user.UserID, user.Username, user.DisplayName, user.PasswordHash, user.Status, "user")
 	if err != nil {
 		return fmt.Errorf("insert user: %w", err)
 	}

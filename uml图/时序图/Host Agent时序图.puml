@@ -1,0 +1,66 @@
+@startuml
+title Host Agent 处理时序图
+
+actor 用户 as User
+boundary "前端聊天页面" as Frontend
+control "Host Agent" as Host
+control "N_agent_info\n工具节点" as AgentInfoNode
+control "agent_info 工具" as AgentInfoTool
+control "N_route\n聊天模型节点" as RouteNode
+control "N_condition\n条件节点" as CondNode
+control "N_direct_answer\n聊天模型节点" as DirectNode
+control "N_call_agent\n工具节点" as CallAgentNode
+control "call_agent 工具" as CallAgentTool
+control "目标专业 Agent" as SubAgent
+
+User -> Frontend : 输入问题并发送
+activate Frontend
+
+Frontend -> Host : 提交用户输入与上下文
+activate Host
+
+Host -> AgentInfoNode : 进入 N_agent_info
+activate AgentInfoNode
+AgentInfoNode -> AgentInfoTool : 获取当前可用 Agent 列表
+activate AgentInfoTool
+AgentInfoTool --> AgentInfoNode : 返回 Agent 列表
+deactivate AgentInfoTool
+AgentInfoNode --> Host : 返回 Agent 信息
+deactivate AgentInfoNode
+
+Host -> RouteNode : 进入 N_route\n结合用户输入与 Agent 列表执行路由判断
+activate RouteNode
+RouteNode --> Host : 返回路由结果\n(false 或目标 Agent 名称)
+deactivate RouteNode
+
+Host -> CondNode : 进入 N_condition\n判断 N_route.response
+activate CondNode
+CondNode --> Host : 返回分支结果
+deactivate CondNode
+
+alt 直接回答
+    Host -> DirectNode : 进入 N_direct_answer\n组织直接回复
+    activate DirectNode
+    DirectNode --> Host : 返回回答结果
+    deactivate DirectNode
+else 调用专业 Agent
+    Host -> CallAgentNode : 进入 N_call_agent
+    activate CallAgentNode
+    CallAgentNode -> CallAgentTool : 转发请求至目标 Agent
+    activate CallAgentTool
+    CallAgentTool -> SubAgent : 调用目标专业 Agent
+    activate SubAgent
+    SubAgent --> CallAgentTool : 返回处理结果
+    deactivate SubAgent
+    CallAgentTool --> CallAgentNode : 返回 Agent 结果
+    deactivate CallAgentTool
+    CallAgentNode --> Host : 返回协同结果
+    deactivate CallAgentNode
+end
+
+Host --> Frontend : 返回最终结果
+deactivate Host
+
+Frontend --> User : 展示回答
+deactivate Frontend
+@enduml

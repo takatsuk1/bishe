@@ -150,7 +150,11 @@ const allEventsTimeline = computed(() => {
   const merged: MonitorEvent[] = []
   Object.values(runEventsById.value).forEach((items) => merged.push(...items))
   return merged.sort((a, b) => {
-    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    const timeDelta = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    if (timeDelta !== 0) {
+      return timeDelta
+    }
+    return Number(a.id || 0) - Number(b.id || 0)
   })
 })
 

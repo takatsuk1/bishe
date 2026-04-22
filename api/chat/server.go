@@ -358,15 +358,6 @@ func (s *Server) chatHandler(c *gin.Context) {
 		}
 		convID := conv.GetID(ctx)
 
-		lastUserMsg := req.Messages[len(req.Messages)-1]
-		userMsgID := uuid.New().String()
-		userMsg := &memory.Message{
-			Role:    lastUserMsg.Role,
-			Content: lastUserMsg.Content,
-		}
-		if err := conv.Append(ctx, userMsgID, userMsg); err != nil {
-		}
-
 		historyMsgs, err := conv.GetMessages(ctx)
 		if err != nil {
 		}
@@ -383,6 +374,15 @@ func (s *Server) chatHandler(c *gin.Context) {
 			}
 			historyText += "=== 当前问题 ===\n"
 			historyParts = append(historyParts, internalproto.NewTextPart(historyText))
+		}
+
+		lastUserMsg := req.Messages[len(req.Messages)-1]
+		userMsgID := uuid.New().String()
+		userMsg := &memory.Message{
+			Role:    lastUserMsg.Role,
+			Content: lastUserMsg.Content,
+		}
+		if err := conv.Append(ctx, userMsgID, userMsg); err != nil {
 		}
 
 		taskStateKey := memory.StateKeyCurrentTaskID + ":" + convID

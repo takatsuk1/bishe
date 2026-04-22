@@ -1,0 +1,53 @@
+@startuml
+title ResumeCustomizer Agent 处理时序图
+
+actor 用户 as User
+boundary "前端页面" as Frontend
+control "ResumeCustomizer Agent" as Agent
+control "start\n开始节点" as StartNode
+control "analyze\n聊天模型节点" as AnalyzeNode
+control "tailor\n聊天模型节点" as TailorNode
+control "end\n结束节点" as EndNode
+
+User -> Frontend : 提交简历优化需求
+activate Frontend
+
+Frontend -> Agent : 发送简历内容、岗位信息与用户输入
+activate Agent
+
+Agent -> StartNode : 进入 start
+activate StartNode
+StartNode --> Agent : 开始处理
+deactivate StartNode
+
+Agent -> AnalyzeNode : 进入 analyze\n按 analyze_resume 分析简历与岗位特征
+activate AnalyzeNode
+AnalyzeNode --> Agent : 返回改进方向、关键词与优化建议
+deactivate AnalyzeNode
+
+Agent -> TailorNode : 进入 tailor\n按 tailor_resume 生成定制化简历
+activate TailorNode
+
+loop 流式输出增量内容
+    TailorNode --> Frontend : 推送增量生成内容
+end
+
+TailorNode --> Agent : 返回完整定制化简历结果
+deactivate TailorNode
+
+Agent -> EndNode : 进入 end
+activate EndNode
+EndNode --> Agent : 返回最终输出
+deactivate EndNode
+
+alt 模型调用成功
+    Agent --> Frontend : 返回最终简历结果
+else 模型调用异常
+    Agent -> Agent : 回退到预设兜底输出逻辑
+    Agent --> Frontend : 返回兜底结果
+end
+
+deactivate Agent
+Frontend --> User : 展示简历优化结果
+deactivate Frontend
+@enduml

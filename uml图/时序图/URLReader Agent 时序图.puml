@@ -1,0 +1,42 @@
+@startuml
+title URLReader Agent 处理时序图
+
+actor 用户 as User
+boundary "前端页面" as Frontend
+control "URLReader Agent" as Agent
+control "URL 提取/识别节点" as ExtractNode
+control "N_fetch\n工具节点" as FetchNode
+control "fetch 工具\n(Fetch MCP/网页读取能力)" as FetchTool
+control "N_summary\n聊天模型节点" as SummaryNode
+
+User -> Frontend : 提交网页问题或 URL
+activate Frontend
+
+Frontend -> Agent : 发送用户输入
+activate Agent
+
+Agent -> ExtractNode : 识别目标链接或网页内容目标
+activate ExtractNode
+ExtractNode --> Agent : 返回 URL / 抽取目标
+deactivate ExtractNode
+
+Agent -> FetchNode : 进入 N_fetch
+activate FetchNode
+FetchNode -> FetchTool : 抓取网页内容
+activate FetchTool
+FetchTool --> FetchNode : 返回页面文本
+deactivate FetchTool
+FetchNode --> Agent : 返回网页内容
+deactivate FetchNode
+
+Agent -> SummaryNode : 进入 N_summary\n按 summarize_content 意图整理网页内容
+activate SummaryNode
+SummaryNode --> Agent : 返回摘要、关键结论或问答结果
+deactivate SummaryNode
+
+Agent --> Frontend : 返回最终答案
+deactivate Agent
+
+Frontend --> User : 展示网页处理结果
+deactivate Frontend
+@enduml

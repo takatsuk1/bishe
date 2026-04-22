@@ -24,7 +24,10 @@ const (
 	URLReaderDefaultTaskType  = "urlreader_default"
 )
 
-var urlRegex = regexp.MustCompile(`https?://[^\s"'<>\]\)]+`)
+var (
+	urlRegex        = regexp.MustCompile(`https?://[^\s"'<>\]\)]+`)
+	urlreaderStepRe = regexp.MustCompile(`\[\]\(step://[^\)]*\)`)
+)
 
 type ctxKeyTaskManager struct{}
 
@@ -665,7 +668,7 @@ func extractOriginalQuestion(payload map[string]any) string {
 }
 
 func extractCurrentQuestionSection(in string) string {
-	s := strings.TrimSpace(in)
+	s := strings.TrimSpace(urlreaderStepRe.ReplaceAllString(in, " "))
 	if s == "" {
 		return ""
 	}
@@ -694,7 +697,7 @@ func extractURLCandidateFromPayload(payload map[string]any) string {
 		strings.TrimSpace(fmt.Sprint(payload["query"])),
 	}
 	for _, c := range candidates {
-		if u := firstURL(c); u != "" {
+		if u := firstURL(extractCurrentQuestionSection(c)); u != "" {
 			return u
 		}
 	}
@@ -708,7 +711,10 @@ func extractURLCandidateFromPayload(payload map[string]any) string {
 			if !ok {
 				continue
 			}
-			if u := firstURL(strings.TrimSpace(fmt.Sprint(out["query"]))); u != "" {
+			if strings.TrimSpace(fmt.Sprint(m["node_id"])) != "__input__" {
+				continue
+			}
+			if u := firstURL(extractCurrentQuestionSection(strings.TrimSpace(fmt.Sprint(out["query"])))); u != "" {
 				return u
 			}
 		}

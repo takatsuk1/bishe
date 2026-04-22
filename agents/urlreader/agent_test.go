@@ -58,6 +58,26 @@ func TestFirstURL(t *testing.T) {
 	}
 }
 
+func TestExtractURLCandidateFromPayload_UsesCurrentQuestionOnly(t *testing.T) {
+	payload := map[string]any{
+		"query": "=== 对话历史 ===\n用户: 请读取 https://old.example.com\n助手: 好的\n=== 当前问题 ===\n帮我搜索一下重庆邮电大学",
+	}
+
+	if got := extractURLCandidateFromPayload(payload); got != "" {
+		t.Fatalf("extractURLCandidateFromPayload()=%q, want empty", got)
+	}
+}
+
+func TestExtractURLCandidateFromPayload_PrefersCurrentQuestionURL(t *testing.T) {
+	payload := map[string]any{
+		"query": "=== 对话历史 ===\n用户: 请读取 https://old.example.com\n助手: 好的\n=== 当前问题 ===\n请读取 https://new.example.com",
+	}
+
+	if got := extractURLCandidateFromPayload(payload); got != "https://new.example.com" {
+		t.Fatalf("extractURLCandidateFromPayload()=%q, want %q", got, "https://new.example.com")
+	}
+}
+
 func TestURLReaderProcessInternal_EndToEnd(t *testing.T) {
 	llmServer := newMockLLMServer(t, func(prompt string) string {
 		if strings.Contains(prompt, "URL 提取助手") {

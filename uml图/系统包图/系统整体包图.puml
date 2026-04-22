@@ -1,0 +1,111 @@
+@startuml
+title 多智能体协作平台整体包图
+
+skinparam packageStyle folder
+skinparam shadowing false
+skinparam linetype ortho
+skinparam defaultTextAlignment left
+skinparam ArrowColor black
+skinparam PackageBorderColor black
+skinparam PackageFontColor black
+skinparam PackageFontSize 15
+skinparam ClassBorderColor transparent
+skinparam ClassBackgroundColor transparent
+skinparam ClassFontColor black
+skinparam ClassAttributeIconSize 0
+hide circle
+
+package "前端展示层" as Frontend {
+  class 前端展示层 {
+    + 聊天页面
+    + 工作流设计页面
+    + 工具管理页面
+    + 监控页面
+    + 用户管理页面
+    # 接口路由
+  }
+}
+
+package "统一接口层" as API {
+  class 统一接口层 {
+    + 聊天接口
+    + 编排接口
+    + 认证接口
+    + 监控接口
+    + 后台管理接口
+    - 请求分发
+  }
+}
+
+package "编排执行层" as Orchestration {
+  class 编排执行层 {
+    + 工作流定义管理
+    + 工作流执行器
+    + 运行实例管理
+    + 用户工作流管理
+    + 用户智能体管理
+    - 节点调度逻辑
+  }
+}
+
+package "智能体执行层" as Agents {
+  class 多智能体层 {
+    + HostAgent
+    + DeepResearchAgent
+    + URLReaderAgent
+    + LBSHelperAgent
+    + FinanceHelperAgent
+    + BaziHelperAgent
+    + ResumeCustomizerAgent
+    + InterviewSimulatorAgent
+    + CareerRadarAgent
+    + UserAgents
+  }
+}
+
+package "工具接入层" as Tools {
+  class 智能体工具层 {
+    + HTTP类工具
+    + MCP类工具
+    + 工具注册中心
+    + Agent调度工具
+    - 工具封装适配
+  }
+}
+
+package "数据存储层" as Storage {
+  class 数据存储层 {
+    + MySQL业务数据
+    + Redis会话与缓存
+    + 工作流草稿数据
+    + 运行记录数据
+    - 数据访问实现
+  }
+}
+
+package "运行治理层" as Governance {
+  class 运行治理层 {
+    + 认证授权
+    + 角色权限控制
+    + 运行监控
+    + 事件追踪
+    + 告警处理
+    - 治理策略实现
+  }
+}
+
+Frontend ..> API : <<import>>
+API ..> Orchestration : <<import>>
+API ..> Governance : <<import>>
+
+Orchestration ..> Agents : <<import>>
+Orchestration ..> Tools : <<import>>
+Orchestration ..> Storage : <<import>>
+Orchestration ..> Governance : <<import>>
+
+Agents ..> Tools : <<import>>
+Agents ..> Storage : <<import>>
+
+Governance ..> Storage : <<import>>
+
+@enduml

@@ -1,0 +1,53 @@
+@startuml
+title CareerRadar Agent 处理时序图
+
+actor 用户 as User
+boundary "前端页面" as Frontend
+control "CareerRadar Agent" as Agent
+control "工作流启动器\nStartWorkflow" as Starter
+control "步骤事件记录器" as StepLogger
+control "研究分析节点" as AnalyzeNode
+control "结果整理节点" as SummaryNode
+
+User -> Frontend : 提交职业发展/岗位分析问题
+activate Frontend
+
+Frontend -> Agent : 发送用户请求
+activate Agent
+
+Agent -> Starter : 启动专属 CareerRadar 工作流
+activate Starter
+Starter --> Agent : 返回工作流上下文
+deactivate Starter
+
+Agent -> StepLogger : 记录开始事件与初始状态
+activate StepLogger
+StepLogger --> Agent : 记录完成
+deactivate StepLogger
+
+Agent -> AnalyzeNode : 执行职业信息分析与岗位研究
+activate AnalyzeNode
+AnalyzeNode --> Agent : 返回职业分析结果
+deactivate AnalyzeNode
+
+Agent -> StepLogger : 记录步骤事件与进度状态
+activate StepLogger
+StepLogger --> Agent : 记录完成
+deactivate StepLogger
+
+Agent -> SummaryNode : 整理职业建议与岗位分析结果
+activate SummaryNode
+SummaryNode --> Agent : 返回最终结论
+deactivate SummaryNode
+
+Agent -> StepLogger : 记录完成事件
+activate StepLogger
+StepLogger --> Agent : 记录完成
+deactivate StepLogger
+
+Agent --> Frontend : 返回职业建议或岗位分析结果
+deactivate Agent
+
+Frontend --> User : 展示职业分析结果
+deactivate Frontend
+@enduml

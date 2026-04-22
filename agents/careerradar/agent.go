@@ -319,7 +319,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 	}
 
 	logger.Infof("[TRACE] careerradar.chatmodel start task=%s intent=%s model=%s", taskID, intent, model)
-	a.emitSemanticStep(ctx, taskID, "careerradar.llm.start", internalproto.StepStateInfo, "姝ｅ湪璋冪敤澶фā鍨嬶細"+nodeID)
+	a.emitSemanticStep(ctx, taskID, "careerradar.llm.start", internalproto.StepStateInfo, "ChatModel节点执行"+nodeID)
 	client := llm.NewClient(baseURL, apiKey)
 	var streamBuf strings.Builder
 	var pending strings.Builder
@@ -350,7 +350,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 			return nil
 		}
 		lastEmitAt = time.Now()
-		a.emitSemanticStep(ctx, taskID, "careerradar.llm.delta", internalproto.StepStateInfo, "姝ｅ湪璋冪敤澶фā鍨嬶細"+truncateText(streamBuf.String(), 140))
+		a.emitSemanticStep(ctx, taskID, "careerradar.llm.delta", internalproto.StepStateInfo, "ChatModel节点执行"+truncateText(streamBuf.String(), 140))
 		return nil
 	})
 	if err == nil {
