@@ -17,25 +17,54 @@ var (
 // AgentRegistry 以统一方式管理代理生命周期
 type AgentRegistry interface {
 	// Register 注册代理
+	// 参数:
+	//   desc - 代理描述符
+	//   worker - 工作器接口
+	// 返回值:
+	//   错误
 	Register(desc AgentDescriptor, worker Worker) error
 	// Unregister 注销代理
+	// 参数:
+	//   agentID - 代理 ID
+	// 返回值:
+	//   错误
 	Unregister(agentID string) error
 	// Update 更新代理描述
+	// 参数:
+	//   desc - 代理描述符
+	// 返回值:
+	//   错误
 	Update(desc AgentDescriptor) error
 	// SetStatus 设置代理状态
+	// 参数:
+	//   agentID - 代理 ID
+	//   status - 代理状态
+	//   errMsg - 错误信息
+	// 返回值:
+	//   错误
 	SetStatus(agentID string, status AgentStatus, errMsg string) error
 	// Get 获取代理信息
+	// 参数:
+	//   agentID - 代理 ID
+	// 返回值:
+	//   代理快照、工作器接口和错误
 	Get(agentID string) (AgentSnapshot, Worker, error)
 	// List 列出所有代理
+	// 返回值:
+	//   代理快照列表
 	List() []AgentSnapshot
 	// Match 匹配具有特定能力的代理
+	// 参数:
+	//   capabilities - 能力列表
+	// 返回值:
+	//   匹配的代理快照列表
 	Match(capabilities ...AgentCapability) []AgentSnapshot
 }
 
 // registryEntry 表示注册表中的条目
 type registryEntry struct {
 	snapshot AgentSnapshot // 代理快照
-	worker   Worker       // 工作器
+	worker   Worker        // 工作器
 }
 
 // InMemoryAgentRegistry 是单节点调度器的进程内实现
@@ -54,6 +83,14 @@ func NewInMemoryAgentRegistry() *InMemoryAgentRegistry {
 }
 
 // Register 注册代理
+// 参数:
+//
+//	desc - 代理描述符
+//	worker - 工作器接口
+//
+// 返回值:
+//
+//	错误
 func (r *InMemoryAgentRegistry) Register(desc AgentDescriptor, worker Worker) error {
 	// 检查代理 ID 是否为空
 	if desc.ID == "" {
@@ -89,6 +126,13 @@ func (r *InMemoryAgentRegistry) Register(desc AgentDescriptor, worker Worker) er
 }
 
 // Unregister 注销代理
+// 参数:
+//
+//	agentID - 代理 ID
+//
+// 返回值:
+//
+//	错误
 func (r *InMemoryAgentRegistry) Unregister(agentID string) error {
 	// 检查代理 ID 是否为空
 	if agentID == "" {
@@ -107,6 +151,13 @@ func (r *InMemoryAgentRegistry) Unregister(agentID string) error {
 }
 
 // Update 更新代理描述
+// 参数:
+//
+//	desc - 代理描述符
+//
+// 返回值:
+//
+//	错误
 func (r *InMemoryAgentRegistry) Update(desc AgentDescriptor) error {
 	// 检查代理 ID 是否为空
 	if desc.ID == "" {
@@ -128,6 +179,15 @@ func (r *InMemoryAgentRegistry) Update(desc AgentDescriptor) error {
 }
 
 // SetStatus 设置代理状态
+// 参数:
+//
+//	agentID - 代理 ID
+//	status - 代理状态
+//	errMsg - 错误信息
+//
+// 返回值:
+//
+//	错误
 func (r *InMemoryAgentRegistry) SetStatus(agentID string, status AgentStatus, errMsg string) error {
 	// 检查代理 ID 是否为空
 	if agentID == "" {
@@ -157,6 +217,13 @@ func (r *InMemoryAgentRegistry) SetStatus(agentID string, status AgentStatus, er
 }
 
 // Get 获取代理信息
+// 参数:
+//
+//	agentID - 代理 ID
+//
+// 返回值:
+//
+//	代理快照、工作器接口和错误
 func (r *InMemoryAgentRegistry) Get(agentID string) (AgentSnapshot, Worker, error) {
 	// 检查代理 ID 是否为空
 	if agentID == "" {
@@ -175,6 +242,9 @@ func (r *InMemoryAgentRegistry) Get(agentID string) (AgentSnapshot, Worker, erro
 }
 
 // List 列出所有代理
+// 返回值:
+//
+//	代理快照列表
 func (r *InMemoryAgentRegistry) List() []AgentSnapshot {
 	// 加读锁并列出代理
 	r.mu.RLock()
@@ -192,6 +262,13 @@ func (r *InMemoryAgentRegistry) List() []AgentSnapshot {
 }
 
 // Match 匹配具有特定能力的代理
+// 参数:
+//
+//	capabilities - 能力列表
+//
+// 返回值:
+//
+//	匹配的代理快照列表
 func (r *InMemoryAgentRegistry) Match(capabilities ...AgentCapability) []AgentSnapshot {
 	// 加读锁并匹配代理
 	r.mu.RLock()
@@ -221,6 +298,14 @@ func (r *InMemoryAgentRegistry) Match(capabilities ...AgentCapability) []AgentSn
 }
 
 // containsCapabilities 检查是否包含所有需要的能力
+// 参数:
+//
+//	have - 已有的能力列表
+//	needed - 需要的能力集合
+//
+// 返回值:
+//
+//	是否包含所有需要的能力
 func containsCapabilities(have []AgentCapability, needed map[AgentCapability]struct{}) bool {
 	// 如果没有需要的能力，返回 true
 	if len(needed) == 0 {
@@ -241,6 +326,13 @@ func containsCapabilities(have []AgentCapability, needed map[AgentCapability]str
 }
 
 // cloneDescriptor 克隆代理描述符
+// 参数:
+//
+//	in - 输入的代理描述符
+//
+// 返回值:
+//
+//	克隆的代理描述符
 func cloneDescriptor(in AgentDescriptor) AgentDescriptor {
 	out := in
 	// 克隆能力列表
@@ -270,6 +362,13 @@ func cloneDescriptor(in AgentDescriptor) AgentDescriptor {
 }
 
 // cloneSnapshot 克隆代理快照
+// 参数:
+//
+//	in - 输入的代理快照
+//
+// 返回值:
+//
+//	克隆的代理快照
 func cloneSnapshot(in AgentSnapshot) AgentSnapshot {
 	return AgentSnapshot{
 		Descriptor: cloneDescriptor(in.Descriptor),

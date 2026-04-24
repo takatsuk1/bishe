@@ -7,6 +7,7 @@ import (
 	"ai/pkg/executor"
 	"ai/pkg/logger"
 	"ai/pkg/monitor"
+	"ai/pkg/noncore_service"
 	"ai/pkg/storage"
 	"ai/pkg/tools"
 	"context"
@@ -152,7 +153,7 @@ func (api *OrchestratorAPI) handleListAgents(w http.ResponseWriter, r *http.Requ
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
@@ -173,7 +174,7 @@ func (api *OrchestratorAPI) handleListAgents(w http.ResponseWriter, r *http.Requ
 
 	// 追加已发布用户 agent，保证 chat/workflow 页面可选择。
 	if api.userAgentAPI != nil && api.userAgentAPI.storage != nil {
-		allowAllRead := hasAllScopeAccess(r, "orchestrator.agent.read")
+		allowAllRead := noncore_service.HasAllScopeAccess(r, "orchestrator.agent.read")
 		existing := make(map[string]struct{}, len(agents))
 		for _, a := range agents {
 			existing[a.ID] = struct{}{}
@@ -229,7 +230,7 @@ func (api *OrchestratorAPI) handleListTools(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
@@ -410,16 +411,16 @@ func (api *OrchestratorAPI) handleListWorkflows(w http.ResponseWriter, r *http.R
 	logger.Infof("[ListWorkflows] 开始获取工作流列表")
 
 	ctx := r.Context()
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.read", authz.ScopeOwn, userID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.workflow.read", authz.ScopeOwn, userID, false); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	allowReadAll := hasAllScopeAccess(r, "orchestrator.workflow.read")
+	allowReadAll := noncore_service.HasAllScopeAccess(r, "orchestrator.workflow.read")
 
 	type DraftWorkflowSummary struct {
 		ID         string `json:"id"`
@@ -532,16 +533,16 @@ func (api *OrchestratorAPI) handleGetWorkflow(w http.ResponseWriter, r *http.Req
 	logger.Infof("[GetWorkflow] 获取工作流: %s", workflowID)
 
 	ctx := r.Context()
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.read", authz.ScopeOwn, userID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.workflow.read", authz.ScopeOwn, userID, false); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	allowReadAll := hasAllScopeAccess(r, "orchestrator.workflow.read")
+	allowReadAll := noncore_service.HasAllScopeAccess(r, "orchestrator.workflow.read")
 
 	draft, err := storage.GetDraftWorkflow(ctx, workflowID)
 	if err == nil && draft != nil {
@@ -556,7 +557,7 @@ func (api *OrchestratorAPI) handleGetWorkflow(w http.ResponseWriter, r *http.Req
 		if draft.Nodes != "" {
 			json.Unmarshal([]byte(draft.Nodes), &nodes)
 		}
-		nodes = normalizeAPINodeDefinitions(nodes)
+		nodes = noncore_service.NormalizeAPINodeDefinitions(nodes)
 
 		var edges []EdgeDefinition
 		if draft.Edges != "" {
@@ -625,7 +626,7 @@ func (api *OrchestratorAPI) handleGetWorkflow(w http.ResponseWriter, r *http.Req
 			Metadata:   n.Metadata,
 		})
 	}
-	nodes = normalizeAPINodeDefinitions(nodes)
+	nodes = noncore_service.NormalizeAPINodeDefinitions(nodes)
 
 	edges := make([]EdgeDefinition, 0, len(dbWorkflow.Edges))
 	for _, e := range dbWorkflow.Edges {
@@ -707,12 +708,12 @@ func convertMappingFromStorage(m map[string]interface{}) map[string]string {
 func (api *OrchestratorAPI) handlePutWorkflow(w http.ResponseWriter, r *http.Request, workflowID string) {
 	logger.Infof("[PutWorkflow] ========== 开始处理工作流请求（Redis 草稿）==========")
 	logger.Infof("[PutWorkflow] workflowID: %s", workflowID)
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, userID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, userID, false); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -728,7 +729,7 @@ func (api *OrchestratorAPI) handlePutWorkflow(w http.ResponseWriter, r *http.Req
 		workflow.ID, workflow.Name, workflow.StartNodeId, len(workflow.Nodes), len(workflow.Edges))
 
 	workflow.ID = workflowID
-	workflow.Nodes = normalizeAPINodeDefinitions(workflow.Nodes)
+	workflow.Nodes = noncore_service.NormalizeAPINodeDefinitions(workflow.Nodes)
 
 	nodesJSON, _ := json.Marshal(workflow.Nodes)
 	edgesJSON, _ := json.Marshal(workflow.Edges)
@@ -744,10 +745,10 @@ func (api *OrchestratorAPI) handlePutWorkflow(w http.ResponseWriter, r *http.Req
 	}
 
 	ctx := r.Context()
-	allowManageAll := hasAllScopeAccess(r, "orchestrator.workflow.manage")
+	allowManageAll := noncore_service.HasAllScopeAccess(r, "orchestrator.workflow.manage")
 	if db, dbErr := storage.GetMySQLStorage(); dbErr == nil {
 		if existing, getErr := db.GetWorkflowScoped(ctx, workflowID, userID, allowManageAll); getErr == nil && existing != nil {
-			if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, existing.UserID, false); !allowed {
+			if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, existing.UserID, false); !allowed {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
@@ -792,16 +793,16 @@ func (api *OrchestratorAPI) handlePutWorkflow(w http.ResponseWriter, r *http.Req
 func (api *OrchestratorAPI) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request, workflowID string) {
 	logger.Infof("[DeleteWorkflow] ========== 开始处理删除请求 ==========")
 	logger.Infof("[DeleteWorkflow] workflowID: %s", workflowID)
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, userID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, userID, false); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	allowManageAll := hasAllScopeAccess(r, "orchestrator.workflow.manage")
+	allowManageAll := noncore_service.HasAllScopeAccess(r, "orchestrator.workflow.manage")
 
 	ctx := r.Context()
 	if draft, err := storage.GetDraftWorkflow(ctx, workflowID); err == nil && draft != nil {
@@ -872,99 +873,13 @@ func (api *OrchestratorAPI) handleGetRun(w http.ResponseWriter, r *http.Request,
 
 // 前端数据结构
 
-// AgentInfo 表示 agent 信息
-type AgentInfo struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-}
-
-// WorkflowSummary 表示工作流摘要
-type WorkflowSummary struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	UpdatedAt string `json:"updatedAt"`
-}
-
-// NodeDefinition 表示节点定义
-type NodeDefinition struct {
-	ID            string                 `json:"id"`
-	Type          string                 `json:"type"`
-	Config        map[string]interface{} `json:"config,omitempty"`
-	AgentID       string                 `json:"agentId,omitempty"`
-	TaskType      string                 `json:"taskType,omitempty"`
-	InputType     string                 `json:"inputType,omitempty"`
-	OutputType    string                 `json:"outputType,omitempty"`
-	InputPorts    []PortDefinition       `json:"inputPorts,omitempty"`
-	OutputPorts   []PortDefinition       `json:"outputPorts,omitempty"`
-	InputMapping  map[string]string      `json:"inputMapping,omitempty"`
-	OutputMapping map[string]string      `json:"outputMapping,omitempty"`
-	SchemaVersion int                    `json:"schemaVersion,omitempty"`
-	Condition     string                 `json:"condition,omitempty"`
-	PreInput      string                 `json:"preInput,omitempty"`
-	LoopConfig    *LoopConfig            `json:"loopConfig,omitempty"`
-	Metadata      map[string]string      `json:"metadata,omitempty"`
-}
-
-// PortDefinition 表示端口定义
-type PortDefinition struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Description string `json:"description,omitempty"`
-}
-
-// LoopConfig 表示循环配置
-type LoopConfig struct {
-	MaxIterations int    `json:"maxIterations"`
-	ContinueTo    string `json:"continueTo"`
-	ExitTo        string `json:"exitTo"`
-}
-
-// EdgeDefinition 表示边定义
-type EdgeDefinition struct {
-	From    string            `json:"from"`
-	To      string            `json:"to"`
-	Label   string            `json:"label,omitempty"`
-	Mapping map[string]string `json:"mapping,omitempty"`
-}
-
-// WorkflowDefinition 表示工作流定义
-type WorkflowDefinition struct {
-	ID            string           `json:"id"`
-	Name          string           `json:"name"`
-	Description   string           `json:"description,omitempty"`
-	SchemaVersion int              `json:"schemaVersion,omitempty"`
-	StartNodeId   string           `json:"startNodeId"`
-	Nodes         []NodeDefinition `json:"nodes"`
-	Edges         []EdgeDefinition `json:"edges"`
-}
-
-// WorkflowGetResponse 表示获取工作流的响应
-type WorkflowGetResponse struct {
-	Definition WorkflowDefinition `json:"definition"`
-	UpdatedAt  string             `json:"updatedAt"`
-}
-
-// NodeRunResult 表示节点运行结果
-type NodeRunResult struct {
-	NodeID   string                 `json:"nodeId"`
-	TaskID   string                 `json:"taskId"`
-	State    string                 `json:"state"`
-	Output   map[string]interface{} `json:"output,omitempty"`
-	ErrorMsg string                 `json:"errorMsg,omitempty"`
-}
-
-// RunResult 表示运行结果
-type RunResult struct {
-	RunID         string                 `json:"runId"`
-	WorkflowID    string                 `json:"workflowId"`
-	State         string                 `json:"state"`
-	StartedAt     string                 `json:"startedAt"`
-	FinishedAt    string                 `json:"finishedAt"`
-	UpdatedAt     string                 `json:"updatedAt"`
-	CurrentNodeID string                 `json:"currentNodeId,omitempty"`
-	CurrentTaskID string                 `json:"currentTaskId,omitempty"`
-	NodeResults   []NodeRunResult        `json:"nodeResults"`
-	FinalOutput   map[string]interface{} `json:"finalOutput,omitempty"`
-	ErrorMessage  string                 `json:"errorMessage,omitempty"`
-}
+type AgentInfo = noncore_service.AgentInfo
+type WorkflowSummary = noncore_service.WorkflowSummary
+type NodeDefinition = noncore_service.NodeDefinition
+type PortDefinition = noncore_service.PortDefinition
+type LoopConfig = noncore_service.LoopConfig
+type EdgeDefinition = noncore_service.EdgeDefinition
+type WorkflowDefinition = noncore_service.WorkflowDefinition
+type WorkflowGetResponse = noncore_service.WorkflowGetResponse
+type NodeRunResult = noncore_service.NodeRunResult
+type RunResult = noncore_service.RunResult

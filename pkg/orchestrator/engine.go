@@ -24,20 +24,60 @@ var ErrTaskPaused = errors.New("task paused")
 // Engine 是主机或任务处理器使用的顶级编排门面
 type Engine interface {
 	// RegisterWorker 注册工作器
+	// 参数:
+	//   desc - 代理描述符
+	//   worker - 工作器接口
+	// 返回值:
+	//   错误
 	RegisterWorker(desc AgentDescriptor, worker Worker) error
 	// RegisterWorkflow 注册工作流
+	// 参数:
+	//   wf - 工作流实例
+	// 返回值:
+	//   错误
 	RegisterWorkflow(wf *Workflow) error
 	// StartWorkflow 启动工作流
+	// 参数:
+	//   ctx - 上下文
+	//   workflowID - 工作流 ID
+	//   input - 输入参数
+	// 返回值:
+	//   运行 ID 和错误
 	StartWorkflow(ctx context.Context, workflowID string, input map[string]any) (string, error)
 	// WaitRun 等待工作流运行完成
+	// 参数:
+	//   ctx - 上下文
+	//   runID - 运行 ID
+	// 返回值:
+	//   运行结果和错误
 	WaitRun(ctx context.Context, runID string) (RunResult, error)
 	// GetRun 获取工作流运行状态
+	// 参数:
+	//   ctx - 上下文
+	//   runID - 运行 ID
+	// 返回值:
+	//   运行结果和错误
 	GetRun(ctx context.Context, runID string) (RunResult, error)
 	// CancelTask 取消任务
+	// 参数:
+	//   ctx - 上下文
+	//   taskID - 任务 ID
+	// 返回值:
+	//   错误
 	CancelTask(ctx context.Context, taskID string) error
 	// PauseTask 暂停任务
+	// 参数:
+	//   ctx - 上下文
+	//   taskID - 任务 ID
+	// 返回值:
+	//   错误
 	PauseTask(ctx context.Context, taskID string) error
 	// ResumeTask 恢复任务
+	// 参数:
+	//   ctx - 上下文
+	//   taskID - 任务 ID
+	// 返回值:
+	//   错误
 	ResumeTask(ctx context.Context, taskID string) error
 }
 
@@ -117,6 +157,14 @@ type engine struct {
 }
 
 // NewEngine 创建一个新的引擎实例
+// 参数:
+//
+//	cfg - 引擎配置
+//	registry - 代理注册表
+//
+// 返回值:
+//
+//	引擎接口实例
 func NewEngine(cfg Config, registry AgentRegistry) Engine {
 	// 如果注册表为 nil，使用内存注册表
 	if registry == nil {
@@ -145,6 +193,13 @@ func (e *engine) RegisterWorker(desc AgentDescriptor, worker Worker) error {
 }
 
 // RegisterWorkflow 注册工作流
+// 参数:
+//
+//	wf - 工作流实例
+//
+// 返回值:
+//
+//	错误
 func (e *engine) RegisterWorkflow(wf *Workflow) error {
 	// 检查工作流是否为 nil
 	if wf == nil {
@@ -162,6 +217,15 @@ func (e *engine) RegisterWorkflow(wf *Workflow) error {
 }
 
 // StartWorkflow 启动工作流
+// 参数:
+//
+//	ctx - 上下文
+//	workflowID - 工作流 ID
+//	input - 输入参数
+//
+// 返回值:
+//
+//	运行 ID 和错误
 func (e *engine) StartWorkflow(ctx context.Context, workflowID string, input map[string]any) (string, error) {
 	userID := firstNonEmptyString(mapString(input, "user_id"), mapString(input, "userId"), mapString(input, "UserID"))
 	taskID := firstNonEmptyString(mapString(input, "task_id"), mapString(input, "taskId"), mapString(input, "TaskID"))
@@ -220,6 +284,14 @@ func (e *engine) StartWorkflow(ctx context.Context, workflowID string, input map
 }
 
 // WaitRun 等待工作流运行完成
+// 参数:
+//
+//	ctx - 上下文
+//	runID - 运行 ID
+//
+// 返回值:
+//
+//	运行结果和错误
 func (e *engine) WaitRun(ctx context.Context, runID string) (RunResult, error) {
 	// 获取运行实例
 	run, err := e.getRun(runID)
@@ -238,6 +310,14 @@ func (e *engine) WaitRun(ctx context.Context, runID string) (RunResult, error) {
 }
 
 // GetRun 获取工作流运行状态
+// 参数:
+//
+//	ctx - 上下文
+//	runID - 运行 ID
+//
+// 返回值:
+//
+//	运行结果和错误
 func (e *engine) GetRun(ctx context.Context, runID string) (RunResult, error) {
 	_ = ctx
 	// 获取运行实例
@@ -251,6 +331,14 @@ func (e *engine) GetRun(ctx context.Context, runID string) (RunResult, error) {
 }
 
 // CancelTask 取消任务
+// 参数:
+//
+//	ctx - 上下文
+//	taskID - 任务 ID
+//
+// 返回值:
+//
+//	错误
 func (e *engine) CancelTask(ctx context.Context, taskID string) error {
 	_ = ctx
 	// 获取运行实例
@@ -264,6 +352,14 @@ func (e *engine) CancelTask(ctx context.Context, taskID string) error {
 }
 
 // PauseTask 暂停任务
+// 参数:
+//
+//	ctx - 上下文
+//	taskID - 任务 ID
+//
+// 返回值:
+//
+//	错误
 func (e *engine) PauseTask(ctx context.Context, taskID string) error {
 	_ = ctx
 	// 获取运行实例
@@ -282,6 +378,14 @@ func (e *engine) PauseTask(ctx context.Context, taskID string) error {
 }
 
 // ResumeTask 恢复任务
+// 参数:
+//
+//	ctx - 上下文
+//	taskID - 任务 ID
+//
+// 返回值:
+//
+//	错误
 func (e *engine) ResumeTask(ctx context.Context, taskID string) error {
 	_ = ctx
 	// 获取运行实例
@@ -300,6 +404,13 @@ func (e *engine) ResumeTask(ctx context.Context, taskID string) error {
 }
 
 // getRun 获取运行实例
+// 参数:
+//
+//	runID - 运行 ID
+//
+// 返回值:
+//
+//	运行实例和错误
 func (e *engine) getRun(runID string) (*workflowRun, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -311,6 +422,12 @@ func (e *engine) getRun(runID string) (*workflowRun, error) {
 }
 
 // executeRun 执行工作流运行
+// 参数:
+//
+//	ctx - 上下文
+//	wf - 工作流实例
+//	run - 运行实例
+//	input - 输入参数
 func (e *engine) executeRun(ctx context.Context, wf *Workflow, run *workflowRun, input map[string]any) {
 	defer close(run.done)
 
@@ -397,6 +514,9 @@ func (e *engine) executeRun(ctx context.Context, wf *Workflow, run *workflowRun,
 }
 
 // defaultNodeHandlers 返回默认的节点处理器
+// 返回值:
+//
+//	节点类型到处理器的映射
 func defaultNodeHandlers() map[NodeType]nodeHandler {
 	return map[NodeType]nodeHandler{
 		NodeTypeStart:     startNodeHandler,
@@ -409,6 +529,20 @@ func defaultNodeHandlers() map[NodeType]nodeHandler {
 	}
 }
 
+// preInputNodeHandler 处理预输入节点
+// 参数:
+//
+//	ctx - 上下文
+//	e - 引擎实例
+//	_ - 工作流实例（未使用）
+//	run - 运行实例
+//	node - 节点实例
+//	nextIndex - 下一个节点索引
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点运行结果、下一个节点 ID 和错误
 func preInputNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *workflowRun, node Node,
 	nextIndex map[string][]string, shared map[string]any) (NodeRunResult, string, error) {
 	_ = ctx
@@ -434,6 +568,19 @@ func preInputNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *workf
 }
 
 // startNodeHandler 处理开始节点
+// 参数:
+//
+//	ctx - 上下文
+//	e - 引擎实例
+//	_ - 工作流实例（未使用）
+//	run - 运行实例
+//	node - 节点实例
+//	nextIndex - 下一个节点索引
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点运行结果、下一个节点 ID 和错误
 func startNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *workflowRun, node Node,
 	nextIndex map[string][]string, shared map[string]any) (NodeRunResult, string, error) {
 	_ = ctx
@@ -463,6 +610,19 @@ func startNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *workflow
 }
 
 // endNodeHandler 处理结束节点
+// 参数:
+//
+//	ctx - 上下文
+//	e - 引擎实例
+//	_ - 工作流实例（未使用）
+//	run - 运行实例
+//	node - 节点实例
+//	_ - 下一个节点索引（未使用）
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点运行结果、空字符串（无下一个节点）和错误
 func endNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *workflowRun, node Node,
 	_ map[string][]string, shared map[string]any) (NodeRunResult, string, error) {
 	_ = ctx
@@ -475,6 +635,19 @@ func endNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *workflowRu
 }
 
 // taskNodeHandler 处理任务节点
+// 参数:
+//
+//	ctx - 上下文
+//	e - 引擎实例
+//	wf - 工作流实例
+//	run - 运行实例
+//	node - 节点实例
+//	nextIndex - 下一个节点索引
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点运行结果、下一个节点 ID 和错误
 func taskNodeHandler(ctx context.Context, e *engine, wf *Workflow, run *workflowRun, node Node,
 	nextIndex map[string][]string, shared map[string]any) (NodeRunResult, string, error) {
 	// 执行任务节点
@@ -501,18 +674,58 @@ func taskNodeHandler(ctx context.Context, e *engine, wf *Workflow, run *workflow
 }
 
 // chatModelNodeHandler 处理聊天模型节点
+// 参数:
+//
+//	ctx - 上下文
+//	e - 引擎实例
+//	wf - 工作流实例
+//	run - 运行实例
+//	node - 节点实例
+//	nextIndex - 下一个节点索引
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点运行结果、下一个节点 ID 和错误
 func chatModelNodeHandler(ctx context.Context, e *engine, wf *Workflow, run *workflowRun, node Node,
 	nextIndex map[string][]string, shared map[string]any) (NodeRunResult, string, error) {
 	return semanticTaskNodeHandler(ctx, e, wf, run, node, nextIndex, shared, "chat_model")
 }
 
 // toolNodeHandler 处理工具节点
+// 参数:
+//
+//	ctx - 上下文
+//	e - 引擎实例
+//	wf - 工作流实例
+//	run - 运行实例
+//	node - 节点实例
+//	nextIndex - 下一个节点索引
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点运行结果、下一个节点 ID 和错误
 func toolNodeHandler(ctx context.Context, e *engine, wf *Workflow, run *workflowRun, node Node,
 	nextIndex map[string][]string, shared map[string]any) (NodeRunResult, string, error) {
 	return semanticTaskNodeHandler(ctx, e, wf, run, node, nextIndex, shared, "tool")
 }
 
 // semanticTaskNodeHandler 处理语义任务节点
+// 参数:
+//
+//	ctx - 上下文
+//	e - 引擎实例
+//	wf - 工作流实例
+//	run - 运行实例
+//	node - 节点实例
+//	nextIndex - 下一个节点索引
+//	shared - 共享数据
+//	defaultTaskType - 默认任务类型
+//
+// 返回值:
+//
+//	节点运行结果、下一个节点 ID 和错误
 func semanticTaskNodeHandler(ctx context.Context, e *engine, wf *Workflow, run *workflowRun, node Node,
 	nextIndex map[string][]string, shared map[string]any, defaultTaskType string) (NodeRunResult, string, error) {
 	// 解析节点配置
@@ -557,6 +770,19 @@ func semanticTaskNodeHandler(ctx context.Context, e *engine, wf *Workflow, run *
 }
 
 // conditionNodeHandler 处理条件节点
+// 参数:
+//
+//	ctx - 上下文
+//	e - 引擎实例
+//	_ - 工作流实例（未使用）
+//	run - 运行实例
+//	node - 节点实例
+//	nextIndex - 下一个节点索引
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点运行结果、下一个节点 ID 和错误
 func conditionNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *workflowRun, node Node,
 	nextIndex map[string][]string, shared map[string]any) (NodeRunResult, string, error) {
 	_ = ctx
@@ -576,6 +802,19 @@ func conditionNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *work
 }
 
 // loopNodeHandler 处理循环节点
+// 参数:
+//
+//	ctx - 上下文
+//	e - 引擎实例
+//	wf - 工作流实例
+//	run - 运行实例
+//	node - 节点实例
+//	nextIndex - 下一个节点索引
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点运行结果、下一个节点 ID 和错误
 func loopNodeHandler(ctx context.Context, e *engine, wf *Workflow, run *workflowRun, node Node,
 	nextIndex map[string][]string, shared map[string]any) (NodeRunResult, string, error) {
 	_ = ctx
@@ -622,6 +861,17 @@ func loopNodeHandler(ctx context.Context, e *engine, wf *Workflow, run *workflow
 }
 
 // executeTaskNode 执行任务节点
+// 参数:
+//
+//	ctx - 上下文
+//	wf - 工作流实例
+//	run - 运行实例
+//	node - 节点实例
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点运行结果
 func (e *engine) executeTaskNode(ctx context.Context, wf *Workflow, run *workflowRun, node Node, shared map[string]any) NodeRunResult {
 	// 生成任务 ID
 	taskID := fmt.Sprintf("%s:%s", run.result.RunID, node.ID)
@@ -749,6 +999,11 @@ func (e *engine) executeTaskNode(ctx context.Context, wf *Workflow, run *workflo
 }
 
 // setRunProgress 设置运行进度
+// 参数:
+//
+//	run - 运行实例
+//	nodeID - 节点 ID
+//	taskID - 任务 ID
 func (e *engine) setRunProgress(run *workflowRun, nodeID, taskID string) {
 	if run == nil {
 		return
@@ -765,6 +1020,14 @@ func (e *engine) setRunProgress(run *workflowRun, nodeID, taskID string) {
 }
 
 // waitIfPaused 等待如果任务已暂停
+// 参数:
+//
+//	ctx - 上下文
+//	run - 运行实例
+//
+// 返回值:
+//
+//	错误
 func (e *engine) waitIfPaused(ctx context.Context, run *workflowRun) error {
 	for {
 		run.mu.RLock()
@@ -782,11 +1045,24 @@ func (e *engine) waitIfPaused(ctx context.Context, run *workflowRun) error {
 }
 
 // finishRun 完成运行
+// 参数:
+//
+//	run - 运行实例
+//	state - 运行状态
+//	errMsg - 错误信息
+//	output - 输出数据
 func (e *engine) finishRun(run *workflowRun, state RunState, errMsg string, output map[string]any) {
 	e.finishRunWithResults(run, state, errMsg, output, nil)
 }
 
 // finishRunWithResults 完成运行并设置结果
+// 参数:
+//
+//	run - 运行实例
+//	state - 运行状态
+//	errMsg - 错误信息
+//	output - 输出数据
+//	results - 节点运行结果列表
 func (e *engine) finishRunWithResults(run *workflowRun, state RunState, errMsg string,
 	output map[string]any, results []NodeRunResult) {
 	finishedAt := time.Now()
@@ -824,6 +1100,14 @@ func (e *engine) finishRunWithResults(run *workflowRun, state RunState, errMsg s
 	}
 }
 
+// emitNodeStarted 发送节点开始事件
+// 参数:
+//
+//	ctx - 上下文
+//	run - 运行实例
+//	workflowID - 工作流 ID
+//	node - 节点实例
+//	shared - 共享数据
 func (e *engine) emitNodeStarted(ctx context.Context, run *workflowRun, workflowID string, node Node, shared map[string]any) {
 	if e.monitorSvc == nil || run == nil {
 		return
@@ -883,6 +1167,15 @@ func (e *engine) emitNodeStarted(ctx context.Context, run *workflowRun, workflow
 	}
 }
 
+// emitNodeFinished 发送节点完成事件
+// 参数:
+//
+//	ctx - 上下文
+//	run - 运行实例
+//	workflowID - 工作流 ID
+//	node - 节点实例
+//	nodeRes - 节点运行结果
+//	durationMs - 持续时间（毫秒）
 func (e *engine) emitNodeFinished(ctx context.Context, run *workflowRun, workflowID string, node Node, nodeRes NodeRunResult, durationMs int64) {
 	if e.monitorSvc == nil || run == nil {
 		return

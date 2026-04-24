@@ -1,4 +1,4 @@
-<script setup lang="ts">
+<!-- <script setup lang="ts">
 defineProps<{
   eyebrow: string
   title: string
@@ -17,4 +17,4 @@ defineProps<{
       <slot name="actions" />
     </div>
   </header>
-</template>
+</template> -->

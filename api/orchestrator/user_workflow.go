@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"ai/pkg/authz"
 	"ai/pkg/logger"
+	"ai/pkg/noncore_service"
 	"ai/pkg/storage"
 	"context"
 	"encoding/json"
@@ -61,7 +62,7 @@ func (api *OrchestratorAPI) handleSaveUserWorkflow(w http.ResponseWriter, r *htt
 	}
 	logger.Infof("[SaveWorkflow] Decoded request: workflowId=%s, userId=%s, name=%s, startNodeId=%s, nodes=%d, edges=%d",
 		req.WorkflowID, "<auth>", req.Name, req.StartNodeID, len(req.Nodes), len(req.Edges))
-	req.Nodes = normalizeStorageNodeDefinitions(req.Nodes)
+	req.Nodes = noncore_service.NormalizeStorageNodeDefinitions(req.Nodes)
 
 	for i, node := range req.Nodes {
 		model := ""
@@ -101,12 +102,12 @@ func (api *OrchestratorAPI) handleSaveUserWorkflow(w http.ResponseWriter, r *htt
 		return
 	}
 
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, userID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, userID, false); !allowed {
 		writeJSONError(w, http.StatusForbidden, "FORBIDDEN", "insufficient workflow permissions")
 		return
 	}
@@ -137,12 +138,12 @@ func (api *OrchestratorAPI) handleSaveUserWorkflow(w http.ResponseWriter, r *htt
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	allowManageAll := hasAllScopeAccess(r, "orchestrator.workflow.manage")
+	allowManageAll := noncore_service.HasAllScopeAccess(r, "orchestrator.workflow.manage")
 
 	if req.WorkflowID != "" {
 		existing, getErr := db.GetWorkflowScoped(ctx, req.WorkflowID, userID, allowManageAll)
 		if getErr == nil {
-			if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, existing.UserID, false); !allowed {
+			if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, existing.UserID, false); !allowed {
 				writeJSONError(w, http.StatusForbidden, "FORBIDDEN", "workflow does not belong to current user")
 				return
 			}
@@ -180,7 +181,7 @@ func (api *OrchestratorAPI) handleListUserWorkflows(w http.ResponseWriter, r *ht
 		return
 	}
 
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 		return
@@ -194,7 +195,7 @@ func (api *OrchestratorAPI) handleListUserWorkflows(w http.ResponseWriter, r *ht
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	allowReadAll := hasAllScopeAccess(r, "orchestrator.workflow.read")
+	allowReadAll := noncore_service.HasAllScopeAccess(r, "orchestrator.workflow.read")
 
 	workflows, err := db.ListWorkflowsScoped(ctx, userID, allowReadAll)
 	if err != nil {
@@ -231,19 +232,19 @@ func (api *OrchestratorAPI) handleGetUserWorkflow(w http.ResponseWriter, r *http
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 		return
 	}
-	allowReadAll := hasAllScopeAccess(r, "orchestrator.workflow.read")
+	allowReadAll := noncore_service.HasAllScopeAccess(r, "orchestrator.workflow.read")
 
 	def, err := db.GetWorkflowScoped(ctx, workflowID, userID, allowReadAll)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("Workflow not found: %v", err))
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.read", authz.ScopeOwn, def.UserID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.workflow.read", authz.ScopeOwn, def.UserID, false); !allowed {
 		writeJSONError(w, http.StatusForbidden, "FORBIDDEN", "workflow does not belong to current user")
 		return
 	}
@@ -254,7 +255,7 @@ func (api *OrchestratorAPI) handleGetUserWorkflow(w http.ResponseWriter, r *http
 		Name:        def.Name,
 		Description: def.Description,
 		StartNodeID: def.StartNodeID,
-		Nodes:       normalizeStorageNodeDefinitions(def.Nodes),
+		Nodes:       noncore_service.NormalizeStorageNodeDefinitions(def.Nodes),
 		Edges:       def.Edges,
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
@@ -285,19 +286,19 @@ func (api *OrchestratorAPI) handleDeleteUserWorkflow(w http.ResponseWriter, r *h
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 		return
 	}
-	allowManageAll := hasAllScopeAccess(r, "orchestrator.workflow.manage")
+	allowManageAll := noncore_service.HasAllScopeAccess(r, "orchestrator.workflow.manage")
 
 	def, getErr := db.GetWorkflowScoped(ctx, workflowID, userID, allowManageAll)
 	if getErr != nil {
 		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("Workflow not found: %v", getErr))
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, def.UserID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.workflow.manage", authz.ScopeOwn, def.UserID, false); !allowed {
 		writeJSONError(w, http.StatusForbidden, "FORBIDDEN", "workflow does not belong to current user")
 		return
 	}

@@ -51,6 +51,11 @@ type AgentSnapshot struct {
 // Worker 是执行引擎使用的统一执行接口
 type Worker interface {
 	// Execute 执行任务并返回结果
+	// 参数:
+	//   ctx - 上下文
+	//   req - 执行请求
+	// 返回值:
+	//   执行结果和错误
 	Execute(ctx context.Context, req ExecutionRequest) (ExecutionResult, error)
 }
 

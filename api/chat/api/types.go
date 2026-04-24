@@ -3,11 +3,8 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"math"
-	"os"
 	"reflect"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -19,9 +16,11 @@ type StatusError struct {
 	ErrorMessage string `json:"error"`
 }
 
+// Error 把状态码错误对象格式化成可读错误消息。
 func (e StatusError) Error() string {
 	switch {
 	case e.Status != "" && e.ErrorMessage != "":
+		// 同时有状态文本和业务错误时，优先把两者拼起来返回。
 		return fmt.Sprintf("%s: %s", e.Status, e.ErrorMessage)
 	case e.Status != "":
 		return e.Status
@@ -113,11 +112,13 @@ type ChatRequest struct {
 
 type Tools []Tool
 
+// String 把工具列表序列化成 JSON 字符串，便于日志或调试输出。
 func (t Tools) String() string {
 	bts, _ := json.Marshal(t)
 	return string(bts)
 }
 
+// String 把单个工具定义序列化成 JSON 字符串。
 func (t Tool) String() string {
 	bts, _ := json.Marshal(t)
 	return string(bts)
@@ -134,6 +135,7 @@ type Message struct {
 	ToolCalls        []ToolCall  `json:"tool_calls,omitempty"`
 }
 
+// UnmarshalJSON 在反序列化消息后顺手把 role 统一转成小写。
 func (m *Message) UnmarshalJSON(b []byte) error {
 	type Alias Message
 	var a Alias
@@ -141,6 +143,7 @@ func (m *Message) UnmarshalJSON(b []byte) error {
 		return err
 	}
 
+	// 先按普通结构赋值，再做一层 role 规范化。
 	*m = Message(a)
 	m.Role = strings.ToLower(m.Role)
 	return nil
@@ -158,6 +161,7 @@ type ToolCallFunction struct {
 
 type ToolCallFunctionArguments map[string]any
 
+// String 把工具调用参数序列化成 JSON 字符串。
 func (t *ToolCallFunctionArguments) String() string {
 	bts, _ := json.Marshal(t)
 	return string(bts)
@@ -173,6 +177,7 @@ type Tool struct {
 type PropertyType []string
 
 // UnmarshalJSON implements the json.Unmarshaler interface
+// UnmarshalJSON 兼容 schema 中 type 既可能是字符串，也可能是字符串数组。
 func (pt *PropertyType) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a string first
 	var s string
@@ -191,6 +196,7 @@ func (pt *PropertyType) UnmarshalJSON(data []byte) error {
 }
 
 // MarshalJSON implements the json.Marshaler interface
+// MarshalJSON 在只有一个类型时输出字符串，多个类型时输出数组。
 func (pt PropertyType) MarshalJSON() ([]byte, error) {
 	if len(pt) == 1 {
 		// If there's only one type, marshal as a string
@@ -201,6 +207,7 @@ func (pt PropertyType) MarshalJSON() ([]byte, error) {
 }
 
 // String returns a string representation of the PropertyType
+// String 返回 PropertyType 的可读字符串表示。
 func (pt PropertyType) String() string {
 	if len(pt) == 0 {
 		return ""
@@ -228,6 +235,7 @@ type ToolFunction struct {
 	} `json:"parameters"`
 }
 
+// String 把工具函数定义序列化成 JSON 字符串。
 func (t *ToolFunction) String() string {
 	bts, _ := json.Marshal(t)
 	return string(bts)
@@ -314,56 +322,6 @@ type EmbedResponse struct {
 	PromptEvalCount int           `json:"prompt_eval_count,omitempty"`
 }
 
-// EmbeddingRequest is the request passed to [Client.Embeddings].
-type EmbeddingRequest struct {
-	// Model is the model name.
-	Model string `json:"model"`
-
-	// Prompt is the textual prompt to embed.
-	Prompt string `json:"prompt"`
-
-	// KeepAlive controls how long the model will stay loaded into memory following
-	// this request.
-	KeepAlive *Duration `json:"keep_alive,omitempty"`
-
-	// Options lists model-specific options.
-	Options map[string]any `json:"options"`
-}
-
-// EmbeddingResponse is the response from [Client.Embeddings].
-type EmbeddingResponse struct {
-	Embedding []float64 `json:"embedding"`
-}
-
-// CreateRequest is the request passed to [Client.Create].
-type CreateRequest struct {
-	Model    string `json:"model"`
-	Stream   *bool  `json:"stream,omitempty"`
-	Quantize string `json:"quantize,omitempty"`
-
-	From       string            `json:"from,omitempty"`
-	Files      map[string]string `json:"files,omitempty"`
-	Adapters   map[string]string `json:"adapters,omitempty"`
-	Template   string            `json:"template,omitempty"`
-	License    any               `json:"license,omitempty"`
-	System     string            `json:"system,omitempty"`
-	Parameters map[string]any    `json:"parameters,omitempty"`
-	Messages   []Message         `json:"messages,omitempty"`
-
-	// Deprecated: set the model name with Model instead
-	Name string `json:"name"`
-	// Deprecated: use Quantize instead
-	Quantization string `json:"quantization,omitempty"`
-}
-
-// DeleteRequest is the request passed to [Client.Delete].
-type DeleteRequest struct {
-	Model string `json:"model"`
-
-	// Deprecated: set the model name with Model instead
-	Name string `json:"name"`
-}
-
 // ShowRequest is the request passed to [Client.Show].
 type ShowRequest struct {
 	Model  string `json:"model"`
@@ -394,53 +352,9 @@ type ShowResponse struct {
 	ModifiedAt    time.Time      `json:"modified_at,omitempty"`
 }
 
-// CopyRequest is the request passed to [Client.Copy].
-type CopyRequest struct {
-	Source      string `json:"source"`
-	Destination string `json:"destination"`
-}
-
-// PullRequest is the request passed to [Client.Pull].
-type PullRequest struct {
-	Model    string `json:"model"`
-	Insecure bool   `json:"insecure,omitempty"` // Deprecated: ignored
-	Username string `json:"username"`           // Deprecated: ignored
-	Password string `json:"password"`           // Deprecated: ignored
-	Stream   *bool  `json:"stream,omitempty"`
-
-	// Deprecated: set the model name with Model instead
-	Name string `json:"name"`
-}
-
-// ProgressResponse is the response passed to progress functions like
-// [PullProgressFunc] and [PushProgressFunc].
-type ProgressResponse struct {
-	Status    string `json:"status"`
-	Digest    string `json:"digest,omitempty"`
-	Total     int64  `json:"total,omitempty"`
-	Completed int64  `json:"completed,omitempty"`
-}
-
-// PushRequest is the request passed to [Client.Push].
-type PushRequest struct {
-	Model    string `json:"model"`
-	Insecure bool   `json:"insecure,omitempty"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Stream   *bool  `json:"stream,omitempty"`
-
-	// Deprecated: set the model name with Model instead
-	Name string `json:"name"`
-}
-
 // ListResponse is the response from [Client.List].
 type ListResponse struct {
 	Models []ListModelResponse `json:"models"`
-}
-
-// ProcessResponse is the response from [Client.Process].
-type ProcessResponse struct {
-	Models []ProcessModelResponse `json:"models"`
 }
 
 // ListModelResponse is a single model description in [ListResponse].
@@ -451,21 +365,6 @@ type ListModelResponse struct {
 	Size       int64        `json:"size"`
 	Digest     string       `json:"digest"`
 	Details    ModelDetails `json:"details,omitempty"`
-}
-
-// ProcessModelResponse is a single model description in [ProcessResponse].
-type ProcessModelResponse struct {
-	Name      string       `json:"name"`
-	Model     string       `json:"model"`
-	Size      int64        `json:"size"`
-	Digest    string       `json:"digest"`
-	Details   ModelDetails `json:"details,omitempty"`
-	ExpiresAt time.Time    `json:"expires_at"`
-	SizeVRAM  int64        `json:"size_vram"`
-}
-
-type TokenResponse struct {
-	Token string `json:"token"`
 }
 
 // GenerateResponse is the response passed into [GenerateResponseFunc].
@@ -509,154 +408,39 @@ type Tensor struct {
 	Shape []uint64 `json:"shape"`
 }
 
-func (m *Metrics) Summary() {
-	if m.TotalDuration > 0 {
-		fmt.Fprintf(os.Stderr, "total duration:       %v\n", m.TotalDuration)
-	}
-
-	if m.LoadDuration > 0 {
-		fmt.Fprintf(os.Stderr, "load duration:        %v\n", m.LoadDuration)
-	}
-
-	if m.PromptEvalCount > 0 {
-		fmt.Fprintf(os.Stderr, "prompt eval count:    %d token(s)\n", m.PromptEvalCount)
-	}
-
-	if m.PromptEvalDuration > 0 {
-		fmt.Fprintf(os.Stderr, "prompt eval duration: %s\n", m.PromptEvalDuration)
-		fmt.Fprintf(os.Stderr, "prompt eval rate:     %.2f tokens/s\n",
-			float64(m.PromptEvalCount)/m.PromptEvalDuration.Seconds())
-	}
-
-	if m.EvalCount > 0 {
-		fmt.Fprintf(os.Stderr, "eval count:           %d token(s)\n", m.EvalCount)
-	}
-
-	if m.EvalDuration > 0 {
-		fmt.Fprintf(os.Stderr, "eval duration:        %s\n", m.EvalDuration)
-		fmt.Fprintf(os.Stderr, "eval rate:            %.2f tokens/s\n", float64(m.EvalCount)/m.EvalDuration.Seconds())
-	}
-}
-
-func (opts *Options) FromMap(m map[string]any) error {
-	valueOpts := reflect.ValueOf(opts).Elem() // names of the fields in the options struct
-	typeOpts := reflect.TypeOf(opts).Elem()   // types of the fields in the options struct
-
-	// build map of json struct tags to their types
-	jsonOpts := make(map[string]reflect.StructField)
-	for _, field := range reflect.VisibleFields(typeOpts) {
-		jsonTag := strings.Split(field.Tag.Get("json"), ",")[0]
-		if jsonTag != "" {
-			jsonOpts[jsonTag] = field
-		}
-	}
-
-	for key, val := range m {
-		opt, ok := jsonOpts[key]
-		if !ok {
-			slog.Warn("invalid option provided", "option", key)
-			continue
-		}
-
-		field := valueOpts.FieldByName(opt.Name)
-		if field.IsValid() && field.CanSet() {
-			if val == nil {
-				continue
-			}
-
-			switch field.Kind() {
-			case reflect.Int:
-				switch t := val.(type) {
-				case int64:
-					field.SetInt(t)
-				case float64:
-					// when JSON unmarshals numbers, it uses float64, not int
-					field.SetInt(int64(t))
-				default:
-					return fmt.Errorf("option %q must be of type integer", key)
-				}
-			case reflect.Bool:
-				val, ok := val.(bool)
-				if !ok {
-					return fmt.Errorf("option %q must be of type boolean", key)
-				}
-				field.SetBool(val)
-			case reflect.Float32:
-				// JSON unmarshals to float64
-				val, ok := val.(float64)
-				if !ok {
-					return fmt.Errorf("option %q must be of type float32", key)
-				}
-				field.SetFloat(val)
-			case reflect.String:
-				val, ok := val.(string)
-				if !ok {
-					return fmt.Errorf("option %q must be of type string", key)
-				}
-				field.SetString(val)
-			case reflect.Slice:
-				// JSON unmarshals to []any, not []string
-				val, ok := val.([]any)
-				if !ok {
-					return fmt.Errorf("option %q must be of type array", key)
-				}
-				// convert []any to []string
-				slice := make([]string, len(val))
-				for i, item := range val {
-					str, ok := item.(string)
-					if !ok {
-						return fmt.Errorf("option %q must be of an array of strings", key)
-					}
-					slice[i] = str
-				}
-				field.Set(reflect.ValueOf(slice))
-			case reflect.Pointer:
-				var b bool
-				if field.Type() == reflect.TypeOf(&b) {
-					val, ok := val.(bool)
-					if !ok {
-						return fmt.Errorf("option %q must be of type boolean", key)
-					}
-					field.Set(reflect.ValueOf(&val))
-				} else {
-					return fmt.Errorf("unknown type loading config params: %v %v", field.Kind(), field.Type())
-				}
-			default:
-				return fmt.Errorf("unknown type loading config params: %v", field.Kind())
-			}
-		}
-	}
-
-	return nil
-}
-
 type Duration struct {
 	time.Duration
 }
 
+// MarshalJSON 把 Duration 按 Ollama 兼容格式编码成 JSON。
 func (d Duration) MarshalJSON() ([]byte, error) {
 	if d.Duration < 0 {
+		// 负值统一按 -1 输出，表示无限保活。
 		return []byte("-1"), nil
 	}
 	return []byte("\"" + d.Duration.String() + "\""), nil
 }
 
+// UnmarshalJSON 兼容秒数和 Go duration 字符串两种输入形式。
 func (d *Duration) UnmarshalJSON(b []byte) (err error) {
 	var v any
 	if err := json.Unmarshal(b, &v); err != nil {
 		return err
 	}
 
+	// 未显式传值时，先给一个默认 keep_alive 时长。
 	d.Duration = 5 * time.Minute
 
 	switch t := v.(type) {
 	case float64:
+		// 数字形式按秒解释，负数则视为无限大。
 		if t < 0 {
 			d.Duration = time.Duration(math.MaxInt64)
 		} else {
 			d.Duration = time.Duration(int(t) * int(time.Second))
 		}
 	case string:
+		// 字符串形式走标准 time.ParseDuration 解析。
 		d.Duration, err = time.ParseDuration(t)
 		if err != nil {
 			return err
@@ -669,75 +453,4 @@ func (d *Duration) UnmarshalJSON(b []byte) (err error) {
 	}
 
 	return nil
-}
-
-// FormatParams converts specified parameter options to their correct types
-func FormatParams(params map[string][]string) (map[string]any, error) {
-	opts := Options{}
-	valueOpts := reflect.ValueOf(&opts).Elem() // names of the fields in the options struct
-	typeOpts := reflect.TypeOf(opts)           // types of the fields in the options struct
-
-	// build map of json struct tags to their types
-	jsonOpts := make(map[string]reflect.StructField)
-	for _, field := range reflect.VisibleFields(typeOpts) {
-		jsonTag := strings.Split(field.Tag.Get("json"), ",")[0]
-		if jsonTag != "" {
-			jsonOpts[jsonTag] = field
-		}
-	}
-
-	out := make(map[string]any)
-	// iterate params and set values based on json struct tags
-	for key, vals := range params {
-		if opt, ok := jsonOpts[key]; !ok {
-			return nil, fmt.Errorf("unknown parameter '%s'", key)
-		} else {
-			field := valueOpts.FieldByName(opt.Name)
-			if field.IsValid() && field.CanSet() {
-				switch field.Kind() {
-				case reflect.Float32:
-					floatVal, err := strconv.ParseFloat(vals[0], 32)
-					if err != nil {
-						return nil, fmt.Errorf("invalid float value %s", vals)
-					}
-
-					out[key] = float32(floatVal)
-				case reflect.Int:
-					intVal, err := strconv.ParseInt(vals[0], 10, 64)
-					if err != nil {
-						return nil, fmt.Errorf("invalid int value %s", vals)
-					}
-
-					out[key] = intVal
-				case reflect.Bool:
-					boolVal, err := strconv.ParseBool(vals[0])
-					if err != nil {
-						return nil, fmt.Errorf("invalid bool value %s", vals)
-					}
-
-					out[key] = boolVal
-				case reflect.String:
-					out[key] = vals[0]
-				case reflect.Slice:
-					// TODO: only string slices are supported right now
-					out[key] = vals
-				case reflect.Pointer:
-					var b bool
-					if field.Type() == reflect.TypeOf(&b) {
-						boolVal, err := strconv.ParseBool(vals[0])
-						if err != nil {
-							return nil, fmt.Errorf("invalid bool value %s", vals)
-						}
-						out[key] = &boolVal
-					} else {
-						return nil, fmt.Errorf("unknown type %s for %s", field.Kind(), key)
-					}
-				default:
-					return nil, fmt.Errorf("unknown type %s for %s", field.Kind(), key)
-				}
-			}
-		}
-	}
-
-	return out, nil
 }

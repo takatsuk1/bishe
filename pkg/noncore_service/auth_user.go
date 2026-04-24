@@ -1,4 +1,4 @@
-package orchestrator
+package noncore_service
 
 import (
 	"ai/pkg/auth"
@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-func authenticatedUserID(r *http.Request) (string, bool) {
+func AuthenticatedUserID(r *http.Request) (string, bool) {
 	if r == nil {
 		return "", false
 	}
@@ -23,8 +23,8 @@ func authenticatedUserID(r *http.Request) (string, bool) {
 	return user.UserID, true
 }
 
-func authorizeResourceAccess(r *http.Request, resource string, requiredScope authz.Scope, ownerUserID string, systemOwned bool) (string, bool) {
-	userID, ok := authenticatedUserID(r)
+func AuthorizeResourceAccess(r *http.Request, resource string, requiredScope authz.Scope, ownerUserID string, systemOwned bool) (string, bool) {
+	userID, ok := AuthenticatedUserID(r)
 	if !ok {
 		return "", false
 	}
@@ -57,7 +57,7 @@ func authorizeResourceAccess(r *http.Request, resource string, requiredScope aut
 	return userID, true
 }
 
-func authzServiceFromRequest(_ context.Context) (*authz.Service, error) {
+func AuthzServiceFromRequest(_ context.Context) (*authz.Service, error) {
 	mysqlStorage, err := storage.GetMySQLStorage()
 	if err != nil {
 		return nil, err
@@ -65,15 +65,15 @@ func authzServiceFromRequest(_ context.Context) (*authz.Service, error) {
 	return authz.NewService(mysqlStorage), nil
 }
 
-func hasAllScopeAccess(r *http.Request, resource string) bool {
+func HasAllScopeAccess(r *http.Request, resource string) bool {
 	if r == nil {
 		return false
 	}
-	userID, ok := authenticatedUserID(r)
+	userID, ok := AuthenticatedUserID(r)
 	if !ok {
 		return false
 	}
-	svc, err := authzServiceFromRequest(r.Context())
+	svc, err := AuthzServiceFromRequest(r.Context())
 	if err != nil {
 		return false
 	}
@@ -85,15 +85,15 @@ func hasAllScopeAccess(r *http.Request, resource string) bool {
 	return checkErr == nil && allowed
 }
 
-func hasAnyRole(r *http.Request, roles ...string) bool {
+func HasAnyRole(r *http.Request, roles ...string) bool {
 	if r == nil {
 		return false
 	}
-	userID, ok := authenticatedUserID(r)
+	userID, ok := AuthenticatedUserID(r)
 	if !ok {
 		return false
 	}
-	svc, err := authzServiceFromRequest(r.Context())
+	svc, err := AuthzServiceFromRequest(r.Context())
 	if err != nil {
 		return false
 	}

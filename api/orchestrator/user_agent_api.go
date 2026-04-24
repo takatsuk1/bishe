@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"ai/pkg/codegen"
 	"ai/pkg/executor"
 	"ai/pkg/logger"
+	"ai/pkg/noncore_service"
 	"ai/pkg/storage"
 	"ai/pkg/tools"
 )
@@ -112,7 +112,7 @@ func (api *UserAgentAPI) handleListUserAgents(w http.ResponseWriter, r *http.Req
 	logger.Infof("[UserAgentAPI] ListUserAgents")
 
 	ctx := r.Context()
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
@@ -124,7 +124,7 @@ func (api *UserAgentAPI) handleListUserAgents(w http.ResponseWriter, r *http.Req
 	}
 
 	agents := make([]storage.UserAgentDefinition, 0)
-	if hasAllScopeAccess(r, "orchestrator.agent.read") {
+	if noncore_service.HasAllScopeAccess(r, "orchestrator.agent.read") {
 		allAgents, err := api.storage.ListUserAgents(ctx, "")
 		if err != nil {
 			logger.Errorf("[UserAgentAPI] List all agents failed: %v", err)
@@ -184,12 +184,12 @@ func (api *UserAgentAPI) handleCreateUserAgent(w http.ResponseWriter, r *http.Re
 	}
 
 	ctx := r.Context()
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, userID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, userID, false); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -198,7 +198,7 @@ func (api *UserAgentAPI) handleCreateUserAgent(w http.ResponseWriter, r *http.Re
 		http.Error(w, "storage not available", http.StatusInternalServerError)
 		return
 	}
-	allowWorkflowManageAll := hasAllScopeAccess(r, "orchestrator.workflow.manage")
+	allowWorkflowManageAll := noncore_service.HasAllScopeAccess(r, "orchestrator.workflow.manage")
 	if _, err := api.storage.GetWorkflowScoped(ctx, req.WorkflowID, userID, allowWorkflowManageAll); err != nil {
 		http.Error(w, "workflow not found or not owned by current user", http.StatusForbidden)
 		return
@@ -225,19 +225,19 @@ func (api *UserAgentAPI) handleGetUserAgent(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	requesterID, _ := authenticatedUserID(r)
-	allowAllRead := hasAllScopeAccess(r, "orchestrator.agent.read")
+	requesterID, _ := noncore_service.AuthenticatedUserID(r)
+	allowAllRead := noncore_service.HasAllScopeAccess(r, "orchestrator.agent.read")
 	def, err := api.storage.GetUserAgentScoped(ctx, agentID, requesterID, true, allowAllRead)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	_, ok := authenticatedUserID(r)
+	_, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.agent.read", authz.ScopeOwn, def.UserID, def.UserID == "system"); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.agent.read", authz.ScopeOwn, def.UserID, def.UserID == "system"); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -269,12 +269,12 @@ func (api *UserAgentAPI) handleUpdateUserAgent(w http.ResponseWriter, r *http.Re
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, existing.UserID, existing.UserID == "system"); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, existing.UserID, existing.UserID == "system"); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -286,7 +286,7 @@ func (api *UserAgentAPI) handleUpdateUserAgent(w http.ResponseWriter, r *http.Re
 		existing.Description = req.Description
 	}
 	if req.WorkflowID != "" {
-		allowWorkflowManageAll := hasAllScopeAccess(r, "orchestrator.workflow.manage")
+		allowWorkflowManageAll := noncore_service.HasAllScopeAccess(r, "orchestrator.workflow.manage")
 		if _, wfErr := api.storage.GetWorkflowScoped(ctx, req.WorkflowID, userID, allowWorkflowManageAll); wfErr != nil {
 			http.Error(w, "workflow not found or not owned by current user", http.StatusForbidden)
 			return
@@ -326,18 +326,18 @@ func (api *UserAgentAPI) handleDeleteUserAgent(w http.ResponseWriter, r *http.Re
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	_, ok := authenticatedUserID(r)
+	_, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, existing.UserID, existing.UserID == "system"); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, existing.UserID, existing.UserID == "system"); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
-	requesterID, _ := authenticatedUserID(r)
-	allowAllManage := hasAllScopeAccess(r, "orchestrator.agent.manage")
+	requesterID, _ := noncore_service.AuthenticatedUserID(r)
+	allowAllManage := noncore_service.HasAllScopeAccess(r, "orchestrator.agent.manage")
 	if err := api.storage.DeleteUserAgentScoped(ctx, agentID, requesterID, false, allowAllManage); err != nil {
 		logger.Errorf("[UserAgentAPI] DeleteUserAgent failed: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -361,12 +361,12 @@ func (api *UserAgentAPI) handleTestUserAgent(w http.ResponseWriter, r *http.Requ
 	}
 
 	workflowDef := req.WorkflowDef.ToExecutorDefinition()
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, userID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, userID, false); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -391,12 +391,12 @@ func (api *UserAgentAPI) handleTestUserAgentByID(w http.ResponseWriter, r *http.
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	_, ok := authenticatedUserID(r)
+	_, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, def.UserID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, def.UserID, false); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -421,7 +421,7 @@ func (api *UserAgentAPI) handleTestUserAgentByID(w http.ResponseWriter, r *http.
 		return
 	}
 
-	execWorkflowDef := convertStorageToExecutorDef(workflowDef)
+	execWorkflowDef := noncore_service.ConvertStorageToExecutorDef(workflowDef)
 
 	api.executeTest(w, r, execWorkflowDef, req.Input, def.UserID)
 }
@@ -546,12 +546,12 @@ func (api *UserAgentAPI) handlePublishUserAgent(w http.ResponseWriter, r *http.R
 		return
 	}
 	prevDef := *def
-	_, ok := authenticatedUserID(r)
+	_, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, def.UserID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, def.UserID, false); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -562,7 +562,7 @@ func (api *UserAgentAPI) handlePublishUserAgent(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	execWorkflowDef := convertStorageToExecutorDef(workflowDef)
+	execWorkflowDef := noncore_service.ConvertStorageToExecutorDef(workflowDef)
 	toolDefs := make([]codegen.ToolDefinition, 0)
 	if api.storage != nil {
 		systemTools, sysErr := api.storage.ListUserTools(ctx, "system")
@@ -593,7 +593,7 @@ func (api *UserAgentAPI) handlePublishUserAgent(w http.ResponseWriter, r *http.R
 				Description:        t.Description,
 				ToolType:           tools.ToolType(t.ToolType),
 				Config:             t.Config,
-				Parameters:         ConvertToToolsParameter(t.Parameters),
+				Parameters:         noncore_service.ConvertToToolsParameter(t.Parameters),
 				SkipFileGeneration: skipToolFileGeneration,
 			})
 		}
@@ -699,13 +699,13 @@ func (api *UserAgentAPI) handleStopUserAgent(w http.ResponseWriter, r *http.Requ
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		_, ok := authenticatedUserID(r)
+		_, ok := noncore_service.AuthenticatedUserID(r)
 		if !ok {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
-		if _, allowed := authorizeResourceAccess(r, "orchestrator.agent.ops", authz.ScopeAll, "", false); !allowed {
-			if _, ownAllowed := authorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, def.UserID, false); !ownAllowed {
+		if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.agent.ops", authz.ScopeAll, "", false); !allowed {
+			if _, ownAllowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, def.UserID, false); !ownAllowed {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
@@ -746,13 +746,13 @@ func (api *UserAgentAPI) handleRestartUserAgent(w http.ResponseWriter, r *http.R
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		_, ok := authenticatedUserID(r)
+		_, ok := noncore_service.AuthenticatedUserID(r)
 		if !ok {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
-		if _, allowed := authorizeResourceAccess(r, "orchestrator.agent.ops", authz.ScopeAll, "", false); !allowed {
-			if _, ownAllowed := authorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, def.UserID, false); !ownAllowed {
+		if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.agent.ops", authz.ScopeAll, "", false); !allowed {
+			if _, ownAllowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.agent.manage", authz.ScopeOwn, def.UserID, false); !ownAllowed {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
@@ -864,7 +864,7 @@ func (d TestWorkflowDefinition) ToExecutorDefinition() *executor.WorkflowDefinit
 				}
 			}
 		}
-		nn.LoopConfig = normalizeExecutorLoopConfig(nn.LoopConfig)
+		nn.LoopConfig = noncore_service.NormalizeExecutorLoopConfig(nn.LoopConfig)
 		if strings.EqualFold(strings.TrimSpace(nn.Type), "tool") {
 			nn.AgentID = ""
 			nn.TaskType = ""
@@ -896,62 +896,6 @@ type UserAgentResponse struct {
 	PublishedAt   string `json:"publishedAt,omitempty"`
 }
 
-func convertStorageToExecutorDef(storageDef *storage.WorkflowDefinition) *executor.WorkflowDefinition {
-	nodes := make([]executor.NodeDef, 0, len(storageDef.Nodes))
-	for _, n := range storageDef.Nodes {
-		agentID := n.AgentID
-		taskType := n.TaskType
-		if strings.EqualFold(strings.TrimSpace(n.Type), "tool") {
-			agentID = ""
-			taskType = ""
-		}
-
-		var loopConfig map[string]any
-		if n.LoopConfig != nil {
-			loopConfig = normalizeExecutorLoopConfig(n.LoopConfig)
-		}
-
-		nodes = append(nodes, executor.NodeDef{
-			ID:         n.ID,
-			Type:       n.Type,
-			Config:     n.Config,
-			AgentID:    agentID,
-			TaskType:   taskType,
-			Condition:  n.Condition,
-			PreInput:   n.PreInput,
-			LoopConfig: loopConfig,
-			Metadata:   n.Metadata,
-		})
-	}
-
-	edges := make([]executor.EdgeDef, 0, len(storageDef.Edges))
-	for _, e := range storageDef.Edges {
-		var mapping map[string]any
-		if e.Mapping != nil {
-			mapping = make(map[string]any)
-			for k, v := range e.Mapping {
-				mapping[k] = v
-			}
-		}
-
-		edges = append(edges, executor.EdgeDef{
-			From:    e.From,
-			To:      e.To,
-			Label:   e.Label,
-			Mapping: mapping,
-		})
-	}
-
-	return &executor.WorkflowDefinition{
-		WorkflowID:  storageDef.WorkflowID,
-		Name:        storageDef.Name,
-		Description: storageDef.Description,
-		StartNodeID: storageDef.StartNodeID,
-		Nodes:       nodes,
-		Edges:       edges,
-	}
-}
-
 func splitPath(path string) []string {
 	path = strings.Trim(path, "/")
 	if path == "" {
@@ -963,26 +907,6 @@ func splitPath(path string) []string {
 		if p != "" {
 			out = append(out, p)
 		}
-	}
-	return out
-}
-
-func normalizeExecutorLoopConfig(in map[string]any) map[string]any {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	if v, ok := out["maxIterations"]; ok {
-		out["max_iterations"] = v
-	}
-	if v, ok := out["continueTo"]; ok {
-		out["continue_to"] = v
-	}
-	if v, ok := out["exitTo"]; ok {
-		out["exit_to"] = v
 	}
 	return out
 }
@@ -1022,7 +946,7 @@ func (api *UserAgentAPI) registerUserToolsForTest(ctx context.Context, userID st
 	toRemove := make([]string, 0)
 
 	for _, t := range allTools {
-		toolImpl, convErr := buildRuntimeTool(t)
+		toolImpl, convErr := noncore_service.BuildRuntimeTool(t)
 		if convErr != nil {
 			return nil, fmt.Errorf("tool %s: %w", t.Name, convErr)
 		}
@@ -1051,102 +975,4 @@ func (api *UserAgentAPI) registerUserToolsForTest(ctx context.Context, userID st
 	}
 
 	return cleanup, nil
-}
-
-func buildRuntimeTool(def storage.UserToolDefinition) (tools.Tool, error) {
-	params := ConvertToToolsParameter(def.Parameters)
-	switch tools.ToolType(def.ToolType) {
-	case tools.ToolTypeHTTP:
-		cfg := tools.HTTPToolConfig{
-			Method:  getStringMap(def.Config, "method", "GET"),
-			URL:     getStringMap(def.Config, "url", ""),
-			Timeout: time.Duration(getIntMap(def.Config, "timeout", 30)) * time.Second,
-		}
-		if headers := getStringStringMap(def.Config, "headers"); len(headers) > 0 {
-			cfg.Headers = headers
-		}
-		cfg.BodyTemplate = getStringMap(def.Config, "body_template", "")
-		return tools.NewHTTPTool(def.Name, def.Description, params, cfg), nil
-
-	case tools.ToolTypeMCP:
-		mode := getMCPMode(def.Config)
-		cfg := tools.MCPToolConfig{
-			Mode:     mode,
-			ToolName: getStringMap(def.Config, "tool_name", ""),
-		}
-		if mode == "stdio" {
-			_, serverCfg, err := extractMCPStdioServer(def.Config)
-			if err != nil {
-				return nil, err
-			}
-			command, args := tools.NormalizeStdioCommand(serverCfg.Command, serverCfg.Args)
-			cfg.Command = command
-			cfg.Args = args
-		} else {
-			cfg.ServerURL = getStringMap(def.Config, "server_url", "")
-			if strings.TrimSpace(cfg.ServerURL) == "" {
-				return nil, fmt.Errorf("mcp server_url is required")
-			}
-		}
-		return tools.NewMCPTool(def.Name, def.Description, params, cfg), nil
-
-	default:
-		return nil, fmt.Errorf("unsupported tool type: %s", def.ToolType)
-	}
-}
-
-func getStringMap(m map[string]interface{}, key string, fallback string) string {
-	if m == nil {
-		return fallback
-	}
-	if raw, ok := m[key]; ok {
-		switch v := raw.(type) {
-		case string:
-			if strings.TrimSpace(v) != "" {
-				return v
-			}
-		}
-	}
-	return fallback
-}
-
-func getIntMap(m map[string]interface{}, key string, fallback int) int {
-	if m == nil {
-		return fallback
-	}
-	raw, ok := m[key]
-	if !ok {
-		return fallback
-	}
-	switch v := raw.(type) {
-	case float64:
-		return int(v)
-	case int:
-		return v
-	case string:
-		i, err := strconv.Atoi(strings.TrimSpace(v))
-		if err == nil {
-			return i
-		}
-	}
-	return fallback
-}
-
-func getStringStringMap(m map[string]interface{}, key string) map[string]string {
-	out := make(map[string]string)
-	if m == nil {
-		return out
-	}
-	raw, ok := m[key]
-	if !ok || raw == nil {
-		return out
-	}
-	typed, ok := raw.(map[string]interface{})
-	if !ok {
-		return out
-	}
-	for k, v := range typed {
-		out[k] = fmt.Sprintf("%v", v)
-	}
-	return out
 }

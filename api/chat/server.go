@@ -31,6 +31,7 @@ import (
 
 	"ai/pkg/logger"
 	"ai/pkg/memory"
+
 	"github.com/ledongthuc/pdf"
 	"github.com/nguyenthenguyen/docx"
 	"github.com/xuri/excelize/v2"
@@ -54,8 +55,11 @@ const (
 	uploadStorageDirectory = "uploads"
 )
 
+// getMemoryFactory 懒加载并返回会话记忆工厂。
+// 这里统一读取 Redis 配置，并保证整个进程只初始化一次。
 func getMemoryFactory() (memory.Factory, error) {
 	memoryFactoryOnce.Do(func() {
+		// 先从主配置里读取 Redis 地址和窗口大小，缺省时再补默认值。
 		cfg := config.GetMainConfig()
 		redisURL := cfg.Redis.URL
 		maxWindowSize := cfg.Redis.MaxWindowSize
@@ -65,6 +69,7 @@ func getMemoryFactory() (memory.Factory, error) {
 		if maxWindowSize <= 0 {
 			maxWindowSize = memory.DefaultMaxWindowSize
 		}
+		// 真正创建基于 Redis 的 memory factory，后续聊天上下文都会复用它。
 		memoryFactory, memoryFactoryErr = memory.NewRedisMemoryFactory(redisURL, maxWindowSize)
 		if memoryFactoryErr != nil {
 			logger.Errorf("Failed to create memory factory: %v", memoryFactoryErr)
@@ -73,8 +78,11 @@ func getMemoryFactory() (memory.Factory, error) {
 	return memoryFactory, memoryFactoryErr
 }
 
+// getAuthService 懒加载鉴权服务。
+// 鉴权服务依赖 MySQL 存储和 JWT 配置，因此也只初始化一次。
 func getAuthService() (*authsvc.Service, error) {
 	authServiceOnce.Do(func() {
+		// 先拿到底层存储，再用配置中的密钥和过期时间构造认证服务。
 		st, err := storage.GetMySQLStorage()
 		if err != nil {
 			authServiceErr = err
@@ -91,8 +99,11 @@ func getAuthService() (*authsvc.Service, error) {
 	return authService, authServiceErr
 }
 
+// handleTaskStatusUpdateEvent 把 agent 返回的任务状态事件翻译成 chat 流里的响应块。
+// 这样前端只需要消费 chat completion 风格的数据，不需要理解 task 协议细节。
 func handleTaskStatusUpdateEvent(ctx context.Context, req api.ChatRequest, ch chan<- any,
 	event internalproto.TaskStatusUpdateEvent) {
+	// 从任务状态里的 message 提取第一段文本，作为当前这次增量输出。
 	var content string
 	if event.Status.Message != nil {
 		if len(event.Status.Message.Parts) > 0 {
@@ -102,10 +113,12 @@ func handleTaskStatusUpdateEvent(ctx context.Context, req api.ChatRequest, ch ch
 			}
 		}
 	}
+	// 如果任务已经进入终态，就额外补一个 task://done 标记给前端识别。
 	finalState := isFinalState(event.Status.State)
 	if finalState {
 		content = content + "[](task://done)"
 	}
+	// 最终把任务事件包装成一条 chat response，继续往流式通道里发送。
 	res := api.ChatResponse{
 		Model:     req.Model,
 		CreatedAt: time.Now().UTC(),
@@ -117,13 +130,17 @@ func handleTaskStatusUpdateEvent(ctx context.Context, req api.ChatRequest, ch ch
 type Server struct {
 }
 
+// NewOpenAIServer 创建对外暴露的聊天 HTTP 服务。
+// 它会初始化依赖、注册路由，并把聊天、上传和若干代理接口挂到 Gin 上。
 func NewOpenAIServer() (http.Handler, error) {
+	// 聊天服务依赖 Redis memory，用于维护用户会话和上下文。
 	_, err := getMemoryFactory()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Redis: %w. Please ensure Redis is running", err)
 	}
 	logger.Infof("Redis memory factory initialized successfully")
 
+	// 同时确保 MySQL 已就绪，后面的用户、权限、agent 配置都会用到它。
 	cfg := config.GetMainConfig()
 	dsn := cfg.MySQL.DSN
 	if dsn == "" {
@@ -135,6 +152,7 @@ func NewOpenAIServer() (http.Handler, error) {
 	}
 	logger.Infof("MySQL storage initialized successfully")
 
+	// 启动时预热内置 agent workflow 定义，供编排和聊天调度使用。
 	logger.Infof("Initializing agent workflows...")
 	if err := orchestrator.InitAgentWorkflows(); err != nil {
 		logger.Errorf("Failed to initialize agent workflows: %v", err)
@@ -161,6 +179,7 @@ func NewOpenAIServer() (http.Handler, error) {
 		c.Next()
 	})
 	engine.ContextWithFallback = true
+	// 下面这些路由共同组成 openai_connector 暴露给前端的统一入口。
 	engine.POST("/v1/chat/completions", ChatMiddleware(), s.chatHandler)
 	engine.POST("/v1/files/upload", s.uploadFilesHandler)
 	engine.Any("/v1/orchestrator/*path", s.proxyOrchestrator)
@@ -170,30 +189,36 @@ func NewOpenAIServer() (http.Handler, error) {
 	return engine.Handler(), nil
 }
 
+// proxyOrchestrator 把编排相关请求转发给 host agent。
 func (s *Server) proxyOrchestrator(c *gin.Context) {
 	_ = s
 	s.proxyHostRequest(c, "/v1/orchestrator")
 }
 
+// proxyMonitor 把监控相关请求转发给 host agent。
 func (s *Server) proxyMonitor(c *gin.Context) {
 	_ = s
 	s.proxyHostRequest(c, "/v1/monitor")
 }
 
+// proxyAuth 把认证相关请求转发给 host agent。
 func (s *Server) proxyAuth(c *gin.Context) {
 	_ = s
 	s.proxyHostRequest(c, "/v1/auth")
 }
 
+// proxyAdmin 把后台管理请求转发给 host agent。
 func (s *Server) proxyAdmin(c *gin.Context) {
 	_ = s
 	s.proxyHostRequest(c, "/v1/admin")
 }
 
+// proxyHostRequest 统一实现“前端只连 openai_connector，再由它转发到 host agent”的代理逻辑。
 func (s *Server) proxyHostRequest(c *gin.Context, routePrefix string) {
 	// Resolve host server URL from config so the browser only talks to openai_connector.
 	var hostURL string
 	if cfg := config.GetMainConfig(); cfg != nil {
+		// 只挑名字为 host 的 agent 作为目标服务。
 		for _, agent := range cfg.OpenAIConnector.Agents {
 			if agent.Name == "host" {
 				hostURL = agent.ServerURL
@@ -211,6 +236,7 @@ func (s *Server) proxyHostRequest(c *gin.Context, routePrefix string) {
 		return
 	}
 
+	// 把当前请求路径拼接到目标 host URL 上，保留原始 query 参数。
 	path := routePrefix + c.Param("path")
 	if path == routePrefix {
 		path = routePrefix + "/"
@@ -219,6 +245,7 @@ func (s *Server) proxyHostRequest(c *gin.Context, routePrefix string) {
 	target.Path = strings.TrimRight(target.Path, "/") + path
 	target.RawQuery = c.Request.URL.RawQuery
 
+	// 读取原始 body 后重新构造请求，保证 method、body、header 都能透传。
 	body, _ := io.ReadAll(c.Request.Body)
 	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
@@ -235,6 +262,7 @@ func (s *Server) proxyHostRequest(c *gin.Context, routePrefix string) {
 	// User workflow test runs may contain multiple LLM/tool nodes and can exceed 2 minutes.
 	// Keep proxy timeout long enough to avoid canceling in-flight orchestrator execution.
 	httpClient := &http.Client{Timeout: 10 * time.Minute}
+	// 执行代理请求，并把目标服务的状态码和响应体原样回写给浏览器。
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -249,20 +277,24 @@ func (s *Server) proxyHostRequest(c *gin.Context, routePrefix string) {
 	c.Data(resp.StatusCode, contentType, respBody)
 }
 
-// isFinalState checks if a TaskState represents a terminal state.
+// isFinalState 判断 task 状态是否已经结束。
 func isFinalState(state internalproto.TaskState) bool {
 	return state == internalproto.TaskStateCompleted ||
 		state == internalproto.TaskStateFailed ||
 		state == internalproto.TaskStateCanceled
 }
 
+// chatHandler 是聊天主入口。
+// 它负责鉴权、恢复会话、把消息发送给目标 agent，并把 agent 事件转成前端可消费的聊天流。
 func (s *Server) chatHandler(c *gin.Context) {
+	// 给每次请求分配请求 ID，便于日志串联和跨服务追踪。
 	requestID := c.GetHeader("X-Request-ID")
 	if requestID == "" {
 		requestID = uuid.New().String()
 	}
 	c.Header("X-Request-ID", requestID)
 
+	// 先把 OpenAI 风格请求体绑定成内部 chat 请求结构。
 	var req api.ChatRequest
 	err := c.ShouldBindJSON(&req)
 	if err != nil {
@@ -274,6 +306,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 		return
 	}
 
+	// 认证当前用户，后续选 agent、恢复会话和权限判断都依赖 userID。
 	authService, authErr := getAuthService()
 	if authErr != nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "auth service unavailable"})
@@ -291,6 +324,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 	}
 	authUserID := authUser.UserID
 
+	// 根据请求里的 model 解析真正要调用的 agent 地址。
 	agentConfig, err := resolveAgentConfig(req.Model, authUserID, requestID)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -303,6 +337,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 
 		ctx := c.Request.Context()
 
+		// 为当前用户拿到 memory 实例，用于保存会话状态和消息历史。
 		factory, memErr := getMemoryFactory()
 		if memErr != nil {
 			ch <- gin.H{"error": fmt.Sprintf("memory service unavailable: %v", memErr)}
@@ -321,6 +356,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 
 		var conv memory.Conversation
 		if clientConvID != "" {
+			// 如果前端带了 conversation_id，就先尝试恢复映射到的真实会话。
 			mapKey := "sk:conv_map:" + clientConvID
 			if mappedID := strings.TrimSpace(state[mapKey]); mappedID != "" {
 				if existing, getErr := mem.GetConversation(ctx, mappedID); getErr == nil {
@@ -328,6 +364,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 				}
 			}
 			if conv == nil {
+				// 映射不存在时新建会话，并把 client 侧的 ID 记录下来。
 				conv, err = mem.NewConversation(ctx)
 				if err != nil {
 					ch <- gin.H{"error": fmt.Sprintf("failed to create conversation: %v", err)}
@@ -340,12 +377,14 @@ func (s *Server) chatHandler(c *gin.Context) {
 			// Backward-compatible fallback: if client doesn't send conversation_id
 			// and this request only carries the latest user message, treat it as a new chat.
 			if len(req.Messages) <= 1 {
+				// 旧客户端如果只传当前这一句，就直接新建会话。
 				conv, err = mem.NewConversation(ctx)
 				if err != nil {
 					ch <- gin.H{"error": fmt.Sprintf("failed to create conversation: %v", err)}
 					return
 				}
 			} else {
+				// 否则尽量沿用当前会话，拿不到时再兜底创建新的。
 				conv, err = mem.GetCurrentConversation(ctx)
 				if err != nil {
 					conv, err = mem.NewConversation(ctx)
@@ -364,6 +403,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 
 		var historyParts []internalproto.Part
 		if len(historyMsgs) > 0 {
+			// 把历史消息拼成一段文本前缀，作为后续发给 agent 的上下文提示。
 			historyText := "=== 对话历史 ===\n"
 			for _, msg := range historyMsgs {
 				if msg.Role == "user" {
@@ -382,6 +422,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 			Role:    lastUserMsg.Role,
 			Content: lastUserMsg.Content,
 		}
+		// 先把用户最后一条消息写入会话，保证记忆与展示一致。
 		if err := conv.Append(ctx, userMsgID, userMsg); err != nil {
 		}
 
@@ -392,6 +433,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 		}
 
 		if taskID == "" {
+			// 如果当前没有进行中的 task，就先分配一个 taskID 并立即回传给前端。
 			taskID = uuid.New().String()
 			res := api.ChatResponse{
 				Model:     req.Model,
@@ -405,6 +447,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 		if err := mem.SetState(ctx, taskStateKey, taskID, memory.StateKeyCurrentUserEventID, ""); err != nil {
 		}
 
+		// 组装最终发给 agent 的消息：历史上下文 + 当前用户问题 + 元数据。
 		var allParts []internalproto.Part
 		allParts = append(allParts, historyParts...)
 		allParts = append(allParts, internalproto.NewTextPart(lastUserMsg.Content))
@@ -424,6 +467,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 			TaskID: &taskID,
 		}
 
+		// 通过 httpagent 客户端把消息转发给目标 agent。
 		client := httpagent.NewClient(agentConfig.ServerURL, time.Minute*10)
 		ctx = httpagent.WithRequestID(ctx, requestID)
 
@@ -434,6 +478,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 		}
 		taskChan, errChan := client.StreamTaskEvents(ctx, taskID)
 
+		// 一边消费 agent 的事件流，一边把输出回推给前端，并累计完整回复内容。
 		var assistantContent strings.Builder
 		lastState := internalproto.TaskState("")
 		for v := range taskChan {
@@ -457,6 +502,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 			return
 		}
 
+		// agent 执行结束后，再把完整 assistant 内容落到会话记忆里。
 		assistantMsgID := uuid.New().String()
 		assistantMsg := &memory.Message{
 			Role:    "assistant",
@@ -466,10 +512,12 @@ func (s *Server) chatHandler(c *gin.Context) {
 		}
 
 		if isFinalState(lastState) {
+			// 终态任务完成后清掉当前 task 标记，避免后续错误复用旧 task。
 			if err := mem.SetState(ctx, taskStateKey, ""); err != nil {
 			}
 		}
 
+		// 最后补一条 done=true 的结束块，通知前端本次聊天流已经结束。
 		res := api.ChatResponse{
 			Model:      req.Model,
 			CreatedAt:  time.Now().UTC(),
@@ -492,12 +540,15 @@ type uploadedFileResult struct {
 	Warning       string `json:"warning,omitempty"`
 }
 
+// uploadFilesHandler 处理前端上传的附件，并尽量提取出可读文本。
 func (s *Server) uploadFilesHandler(c *gin.Context) {
+	// 上传接口同样要求登录，文件会按用户维度存储到本地目录。
 	_, authUserID, ok := authenticateRequestUser(c)
 	if !ok {
 		return
 	}
 
+	// 先解析 multipart 表单，并限制总体积。
 	if err := c.Request.ParseMultipartForm(maxUploadSizeBytes * 5); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid multipart form"})
 		return
@@ -520,6 +571,7 @@ func (s *Server) uploadFilesHandler(c *gin.Context) {
 		return
 	}
 
+	// 逐个校验、保存并尝试提取文本，最终把每个文件的处理结果返回给前端。
 	results := make([]uploadedFileResult, 0, len(fileHeaders))
 	supportedCount := 0
 	for _, header := range fileHeaders {
@@ -570,6 +622,7 @@ func (s *Server) uploadFilesHandler(c *gin.Context) {
 		}
 
 		supportedCount++
+		// 提取文本后，把文本和告警信息一并记录到响应中。
 		extracted, warning := extractTextFromUpload(header.Filename, header.Header.Get("Content-Type"), data)
 		logger.Infof("[TRACE] upload.extract file=%s ext=%s size=%d extracted_len=%d warning=%q", header.Filename, fileExt, len(data), len(extracted), warning)
 		results = append(results, uploadedFileResult{
@@ -589,6 +642,7 @@ func (s *Server) uploadFilesHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"files": results})
 }
 
+// authenticateRequestUser 从 Authorization 头中解析并校验当前用户。
 func authenticateRequestUser(c *gin.Context) (*authsvc.Service, string, bool) {
 	authService, authErr := getAuthService()
 	if authErr != nil {
@@ -608,11 +662,13 @@ func authenticateRequestUser(c *gin.Context) (*authsvc.Service, string, bool) {
 	return authService, authUser.UserID, true
 }
 
+// extractTextFromUpload 根据文件后缀分发到不同解析器，并做统一的质量检查与修复。
 func extractTextFromUpload(filename string, contentType string, data []byte) (string, string) {
 	ext := normalizeUploadExt(filename, contentType)
 	var text string
 	var warning string
 
+	// 先按文件类型选择最合适的文本提取策略。
 	switch ext {
 	case ".pdf":
 		parsed, err := extractTextFromPDF(data)
@@ -647,6 +703,7 @@ func extractTextFromUpload(filename string, contentType string, data []byte) (st
 		warning = "unsupported file type: only PDF/DOCX/XLSX are allowed"
 	}
 
+	// 提取完后统一做规范化和长度截断，避免前端收到过长文本。
 	text = normalizeExtractedText(text)
 	if utf8.RuneCountInString(text) > maxExtractedTextRunes {
 		runes := []rune(text)
@@ -656,6 +713,7 @@ func extractTextFromUpload(filename string, contentType string, data []byte) (st
 		warning = "no readable text extracted"
 	}
 	if text != "" {
+		// 先识别“提取出来但其实是报错/垃圾文本”的情况。
 		if isErrType, reason := isExtractionErrorTypeText(ext, text); isErrType {
 			logger.Infof("[TRACE] upload.extract.error_type file=%s ext=%s reason=%s", filename, ext, reason)
 			warning = appendWarning(warning, "file upload has extraction-error text")
@@ -663,6 +721,7 @@ func extractTextFromUpload(filename string, contentType string, data []byte) (st
 		}
 	}
 	if text != "" {
+		// 再做字符清洗和质量判定，必要时尝试修复一轮。
 		text = sanitizeExtractedText(text)
 		if ok, reason := isHighQualityExtractedText(ext, text); !ok {
 			if reason == "bad_char_ratio" {
@@ -686,12 +745,14 @@ func extractTextFromUpload(filename string, contentType string, data []byte) (st
 	return text, warning
 }
 
+// sanitizeExtractedText 过滤提取文本中的非法字符和明显脏数据。
 func sanitizeExtractedText(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
 	var b strings.Builder
 	for _, r := range text {
+		// 去掉替换字符和 NUL，保留正常可显示的文本字符。
 		if r == '\uFFFD' || r == 0 {
 			continue
 		}
@@ -702,6 +763,7 @@ func sanitizeExtractedText(text string) string {
 	return normalizeExtractedText(b.String())
 }
 
+// salvageReadableExtractedText 尝试从低质量文本里保留“仍然像正常语言”的片段。
 func salvageReadableExtractedText(text string) string {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	kept := make([]string, 0, len(lines))
@@ -725,6 +787,7 @@ func salvageReadableExtractedText(text string) string {
 	return normalizeExtractedText(strings.Join(kept, "\n"))
 }
 
+// appendWarning 用统一格式把多条告警消息串联起来。
 func appendWarning(prev string, next string) string {
 	prev = strings.TrimSpace(prev)
 	next = strings.TrimSpace(next)
@@ -737,6 +800,7 @@ func appendWarning(prev string, next string) string {
 	return prev + "; " + next
 }
 
+// isExtractionErrorTypeText 判断提取结果本身是否像“解析器报错文本”或 PDF 对象垃圾。
 func isExtractionErrorTypeText(ext string, text string) (bool, string) {
 	s := strings.ToLower(strings.TrimSpace(text))
 	if s == "" {
@@ -765,6 +829,7 @@ func isExtractionErrorTypeText(ext string, text string) (bool, string) {
 	return false, ""
 }
 
+// isHighQualityExtractedText 用启发式规则判断提取文本是否足够像正常可读内容。
 func isHighQualityExtractedText(ext string, text string) (bool, string) {
 	s := strings.TrimSpace(text)
 	if s == "" {
@@ -834,6 +899,7 @@ func isHighQualityExtractedText(ext string, text string) (bool, string) {
 	return true, "ok"
 }
 
+// isSupportedUploadExtension 判断当前扩展名是否在允许上传的白名单里。
 func isSupportedUploadExtension(ext string) bool {
 	switch strings.ToLower(strings.TrimSpace(ext)) {
 	case ".pdf", ".docx", ".xlsx":
@@ -843,6 +909,7 @@ func isSupportedUploadExtension(ext string) bool {
 	}
 }
 
+// normalizeUploadExt 优先按文件名取扩展名，取不到时再根据 Content-Type 推断。
 func normalizeUploadExt(filename string, contentType string) string {
 	ext := strings.ToLower(strings.TrimSpace(filepath.Ext(filename)))
 	if ext != "" {
@@ -861,6 +928,7 @@ func normalizeUploadExt(filename string, contentType string) string {
 	}
 }
 
+// extractTextFromDOCX 借助临时文件和 docx 库提取 Word 文本。
 func extractTextFromDOCX(data []byte) (string, error) {
 	tmp, err := os.CreateTemp("", "upload-*.docx")
 	if err != nil {
@@ -876,6 +944,7 @@ func extractTextFromDOCX(data []byte) (string, error) {
 		return "", err
 	}
 
+	// 先把 docx 解开，再从其内部的 XML 内容中提取纯文本。
 	docReader, err := docx.ReadDocxFile(tmpPath)
 	if err != nil {
 		return "", err
@@ -889,6 +958,7 @@ func extractTextFromDOCX(data []byte) (string, error) {
 	return text, nil
 }
 
+// extractTextFromWordprocessingML 从 WordprocessingML 中提取正文文字和换行结构。
 func extractTextFromWordprocessingML(xmlText string) string {
 	if strings.TrimSpace(xmlText) == "" {
 		return ""
@@ -908,6 +978,7 @@ func extractTextFromWordprocessingML(xmlText string) string {
 	}
 
 	for {
+		// 逐个读取 XML token，按标签语义补换行、制表和正文文本。
 		tok, err := dec.Token()
 		if err != nil {
 			break
@@ -935,6 +1006,7 @@ func extractTextFromWordprocessingML(xmlText string) string {
 	return normalizeExtractedText(b.String())
 }
 
+// extractTextFromXLSX 遍历 Excel 工作簿的所有 sheet 和行，拼成纯文本。
 func extractTextFromXLSX(data []byte) (string, error) {
 	wb, err := excelize.OpenReader(bytes.NewReader(data))
 	if err != nil {
@@ -961,12 +1033,13 @@ func extractTextFromXLSX(data []byte) (string, error) {
 	return strings.Join(parts, "\n"), nil
 }
 
+// extractTextFromPDF 先走成熟库的文本层提取，失败后再回退到手写 PDF stream 解析。
 func extractTextFromPDF(data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", fmt.Errorf("empty pdf")
 	}
 
-	// Prefer a mature parser first (text-layer extraction).
+	// 先优先尝试成熟 PDF 库，能直接拿到文本层时优先使用它。
 	if text, err := extractTextFromPDFViaLibrary(data); err == nil {
 		text = normalizeExtractedText(text)
 		if strings.TrimSpace(text) != "" {
@@ -976,6 +1049,7 @@ func extractTextFromPDF(data []byte) (string, error) {
 
 	chunks := make([]string, 0, 16)
 
+	// 如果库解析失败，再退回到手工扫描 stream 的兜底方案。
 	streams := extractPDFStreams(data)
 	logger.Infof("[TRACE] upload.pdf streams=%d size=%d", len(streams), len(data))
 	textStreamCount := 0
@@ -1008,6 +1082,7 @@ func extractTextFromPDF(data []byte) (string, error) {
 	return out, nil
 }
 
+// extractTextFromPDFViaLibrary 使用 pdf 库直接读取 PlainText。
 func extractTextFromPDFViaLibrary(data []byte) (string, error) {
 	reader, err := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -1024,6 +1099,7 @@ func extractTextFromPDFViaLibrary(data []byte) (string, error) {
 	return string(raw), nil
 }
 
+// isLikelyPDFTextStream 粗略判断一个 PDF stream 是否像文本层内容。
 func isLikelyPDFTextStream(stream []byte) bool {
 	if len(stream) == 0 {
 		return false
@@ -1047,10 +1123,12 @@ func isLikelyPDFTextStream(stream []byte) bool {
 		strings.Contains(lower, ">tj")
 }
 
+// extractPDFStreams 从原始 PDF 二进制里切出所有 stream 段。
 func extractPDFStreams(data []byte) [][]byte {
 	out := make([][]byte, 0, 8)
 	cursor := 0
 	for {
+		// 逐段查找 stream/endstream，并把中间内容复制出来。
 		si := bytes.Index(data[cursor:], []byte("stream"))
 		if si < 0 {
 			break
@@ -1081,6 +1159,7 @@ func extractPDFStreams(data []byte) [][]byte {
 	return out
 }
 
+// maybeFlatePDFStream 粗略判断一个 stream 是否可能经过 Flate 压缩。
 func maybeFlatePDFStream(stream []byte) bool {
 	if len(stream) < 2 {
 		return false
@@ -1091,6 +1170,7 @@ func maybeFlatePDFStream(stream []byte) bool {
 	return false
 }
 
+// inflatePDFStream 对疑似 Flate 压缩的 PDF stream 进行解压。
 func inflatePDFStream(stream []byte) ([]byte, error) {
 	zr, err := zlib.NewReader(bytes.NewReader(stream))
 	if err != nil {
@@ -1100,9 +1180,11 @@ func inflatePDFStream(stream []byte) ([]byte, error) {
 	return io.ReadAll(zr)
 }
 
+// extractPDFLiteralText 从 PDF 文本指令里提取括号串和十六进制字符串。
 func extractPDFLiteralText(data []byte) string {
 	parts := make([]string, 0, 32)
 	for i := 0; i < len(data); i++ {
+		// 先解析 (...) 形式的文本字面量。
 		if data[i] == '(' {
 			if s, next := parsePDFParenString(data, i); next > i {
 				if !hasNearbyPDFTextOperator(data, next) {
@@ -1117,6 +1199,7 @@ func extractPDFLiteralText(data []byte) string {
 			}
 			continue
 		}
+		// 再解析 <...> 形式的十六进制文本。
 		if data[i] == '<' && i+1 < len(data) && data[i+1] != '<' {
 			if s, next := parsePDFHexString(data, i); next > i {
 				if !hasNearbyPDFTextOperator(data, next) {
@@ -1134,6 +1217,7 @@ func extractPDFLiteralText(data []byte) string {
 	return strings.Join(parts, "\n")
 }
 
+// hasNearbyPDFTextOperator 检查文本后方是否跟着 PDF 的文本输出操作符。
 func hasNearbyPDFTextOperator(data []byte, from int) bool {
 	if from < 0 || from >= len(data) {
 		return false
@@ -1146,6 +1230,7 @@ func hasNearbyPDFTextOperator(data []byte, from int) bool {
 	return strings.Contains(seg, "tj")
 }
 
+// isLikelyReadablePDFSnippet 判断一个 PDF 片段是否像可读文字而非噪声。
 func isLikelyReadablePDFSnippet(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -1165,6 +1250,7 @@ func isLikelyReadablePDFSnippet(s string) bool {
 	return float64(good)/float64(total) >= 0.7
 }
 
+// parsePDFParenString 解析 PDF 中以括号包裹的字符串，并处理转义和嵌套括号。
 func parsePDFParenString(data []byte, start int) (string, int) {
 	if start >= len(data) || data[start] != '(' {
 		return "", start
@@ -1175,6 +1261,7 @@ func parsePDFParenString(data []byte, start int) (string, int) {
 	for i < len(data) {
 		ch := data[i]
 		if ch == '\\' {
+			// 处理常见转义序列和八进制转义。
 			if i+1 >= len(data) {
 				i++
 				continue
@@ -1246,6 +1333,7 @@ func parsePDFParenString(data []byte, start int) (string, int) {
 	return b.String(), i
 }
 
+// parsePDFHexString 解析 PDF 中的十六进制字符串，并兼容 UTF-16BE 文本。
 func parsePDFHexString(data []byte, start int) (string, int) {
 	i := start + 1
 	b := strings.Builder{}
@@ -1274,6 +1362,7 @@ func parsePDFHexString(data []byte, start int) (string, int) {
 	return string(decoded), i + 1
 }
 
+// normalizeExtractedText 统一规范换行、空格和空白段落，方便后续展示与质量判断。
 func normalizeExtractedText(in string) string {
 	text := strings.ReplaceAll(in, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
@@ -1289,10 +1378,13 @@ func normalizeExtractedText(in string) string {
 	return strings.TrimSpace(text)
 }
 
+// resolveAgentConfig 根据 model 名称解析真正可调用的 agent 配置。
+// 它会优先检查用户可见的动态 agent，再回退到静态配置里的内置 agent。
 func resolveAgentConfig(model string, userID string, requestID string) (config.AgentConfig, error) {
 	if st, err := storage.GetMySQLStorage(); err == nil {
 		allowAllRead := false
 		authzService := authz.NewService(st)
+		// 先判断当前用户是否有查看所有 agent 的权限。
 		if allowed, checkErr := authzService.CanAccess(context.Background(), authz.CheckRequest{
 			UserID:        userID,
 			Resource:      "orchestrator.agent.read",
@@ -1303,11 +1395,13 @@ func resolveAgentConfig(model string, userID string, requestID string) (config.A
 
 		visible := make([]storage.UserAgentDefinition, 0)
 		if allowAllRead {
+			// 管理员之类的角色可以直接看到全部用户 agent。
 			if allAgents, listErr := st.ListUserAgents(context.Background(), ""); listErr == nil {
 				visible = allAgents
 			} else {
 			}
 		} else {
+			// 普通用户只能看到自己的 agent，再叠加 system 级 agent。
 			merged := make(map[string]storage.UserAgentDefinition)
 			if ownAgents, ownErr := st.ListUserAgents(context.Background(), userID); ownErr == nil {
 				for _, a := range ownAgents {
@@ -1326,6 +1420,7 @@ func resolveAgentConfig(model string, userID string, requestID string) (config.A
 		}
 
 		for _, a := range visible {
+			// 找到匹配的 agent 后，还要检查它是否已发布且端口可用。
 			if a.Name != model && a.AgentID != model {
 				continue
 			}
@@ -1349,6 +1444,7 @@ func resolveAgentConfig(model string, userID string, requestID string) (config.A
 		}
 	}
 
+	// 动态 agent 没找到时，再回退到静态配置里的内置 agent。
 	for _, agent := range config.GetMainConfig().OpenAIConnector.Agents {
 		if agent.Name == model {
 			return agent, nil
@@ -1358,6 +1454,7 @@ func resolveAgentConfig(model string, userID string, requestID string) (config.A
 	return config.AgentConfig{}, fmt.Errorf("agent %s not found", model)
 }
 
+// bearerTokenFromHeader 从 Authorization 头里解析 Bearer Token。
 func bearerTokenFromHeader(v string) (string, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -1374,10 +1471,12 @@ func bearerTokenFromHeader(v string) (string, error) {
 	return token, nil
 }
 
+// validateAgentEndpoint 通过读取 agent card 检查目标 agent 是否真的在线。
 func validateAgentEndpoint(ctx context.Context, serverURL string) error {
 	ctx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
 	defer cancel()
 
+	// 用短超时请求 agent card，避免把调用方长时间卡住。
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(serverURL, "/")+"/.well-known/agent.json", nil)
 	if err != nil {
 		return err
@@ -1396,9 +1495,11 @@ func validateAgentEndpoint(ctx context.Context, serverURL string) error {
 	return nil
 }
 
+// streamResponse 把内部通道里的对象编码成 NDJSON，持续推送给前端。
 func streamResponse(c *gin.Context, ch chan any) {
 	c.Header("Content-Type", "application/x-ndjson")
 	c.Stream(func(w io.Writer) bool {
+		// 每次从通道里取一个对象，编码成一行 JSON 后写给浏览器。
 		val, ok := <-ch
 		if !ok {
 			return false

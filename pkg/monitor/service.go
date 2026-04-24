@@ -10,15 +10,22 @@ import (
 )
 
 const (
-	defaultSnapshotLimit = 1500
-	defaultErrorLimit    = 1000
+	defaultSnapshotLimit = 1500 // 默认快照限制
+	defaultErrorLimit    = 1000 // 默认错误信息限制
 )
 
+// Service 监控服务
 type Service struct {
-	store *storage.MySQLStorage
-	rules AlertRules
+	store *storage.MySQLStorage // MySQL存储
+	rules AlertRules            // 警报规则
 }
 
+// NewService 创建监控服务
+// 参数:
+//   store - MySQL存储
+//   rules - 警报规则
+// 返回值:
+//   监控服务实例
 func NewService(store *storage.MySQLStorage, rules *AlertRules) *Service {
 	if store == nil {
 		return nil
@@ -35,6 +42,9 @@ func NewService(store *storage.MySQLStorage, rules *AlertRules) *Service {
 	return &Service{store: store, rules: finalRules}
 }
 
+// Rules 获取警报规则
+// 返回值:
+//   警报规则
 func (s *Service) Rules() AlertRules {
 	if s == nil {
 		return DefaultAlertRules()
@@ -42,6 +52,12 @@ func (s *Service) Rules() AlertRules {
 	return s.rules
 }
 
+// CreateRun 创建运行记录
+// 参数:
+//   ctx - 上下文
+//   in - 创建运行输入
+// 返回值:
+//   错误
 func (s *Service) CreateRun(ctx context.Context, in CreateRunInput) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -79,6 +95,12 @@ func (s *Service) CreateRun(ctx context.Context, in CreateRunInput) error {
 	})
 }
 
+// FinishRun 完成运行记录
+// 参数:
+//   ctx - 上下文
+//   in - 完成运行输入
+// 返回值:
+//   错误
 func (s *Service) FinishRun(ctx context.Context, in FinishRunInput) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -124,6 +146,13 @@ func (s *Service) FinishRun(ctx context.Context, in FinishRunInput) error {
 	return nil
 }
 
+// UpdateCurrentNode 更新当前节点
+// 参数:
+//   ctx - 上下文
+//   runID - 运行ID
+//   nodeID - 节点ID
+// 返回值:
+//   错误
 func (s *Service) UpdateCurrentNode(ctx context.Context, runID, nodeID string) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -131,6 +160,12 @@ func (s *Service) UpdateCurrentNode(ctx context.Context, runID, nodeID string) e
 	return s.store.UpdateMonitorRunCurrentNode(ctx, runID, nodeID)
 }
 
+// AppendEvent 添加事件
+// 参数:
+//   ctx - 上下文
+//   in - 添加事件输入
+// 返回值:
+//   错误
 func (s *Service) AppendEvent(ctx context.Context, in AppendEventInput) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -162,6 +197,12 @@ func (s *Service) AppendEvent(ctx context.Context, in AppendEventInput) error {
 	})
 }
 
+// TriggerAlert 触发警报
+// 参数:
+//   ctx - 上下文
+//   in - 触发警报输入
+// 返回值:
+//   错误
 func (s *Service) TriggerAlert(ctx context.Context, in TriggerAlertInput) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -209,6 +250,12 @@ func (s *Service) TriggerAlert(ctx context.Context, in TriggerAlertInput) error 
 	return nil
 }
 
+// ListRuns 列出运行记录
+// 参数:
+//   ctx - 上下文
+//   in - 列出运行输入
+// 返回值:
+//   运行记录列表、总数和错误
 func (s *Service) ListRuns(ctx context.Context, in ListRunsInput) ([]storage.MonitorRun, int64, error) {
 	if s == nil || s.store == nil {
 		return nil, 0, nil
@@ -223,6 +270,13 @@ func (s *Service) ListRuns(ctx context.Context, in ListRunsInput) ([]storage.Mon
 	})
 }
 
+// GetRunDetail 获取运行详情
+// 参数:
+//   ctx - 上下文
+//   runID - 运行ID
+//   userID - 用户ID
+// 返回值:
+//   运行详情和错误
 func (s *Service) GetRunDetail(ctx context.Context, runID, userID string) (*storage.MonitorRunDetail, error) {
 	if s == nil || s.store == nil {
 		return nil, nil
@@ -230,6 +284,12 @@ func (s *Service) GetRunDetail(ctx context.Context, runID, userID string) (*stor
 	return s.store.GetMonitorRunDetail(ctx, strings.TrimSpace(runID), strings.TrimSpace(userID))
 }
 
+// ListRunEvents 列出运行事件
+// 参数:
+//   ctx - 上下文
+//   in - 列出运行事件输入
+// 返回值:
+//   事件列表、总数和错误
 func (s *Service) ListRunEvents(ctx context.Context, in ListRunEventsInput) ([]storage.MonitorEvent, int64, error) {
 	if s == nil || s.store == nil {
 		return nil, 0, nil
@@ -241,6 +301,12 @@ func (s *Service) ListRunEvents(ctx context.Context, in ListRunEventsInput) ([]s
 	})
 }
 
+// ListAlerts 列出警报
+// 参数:
+//   ctx - 上下文
+//   in - 列出警报输入
+// 返回值:
+//   警报列表、总数和错误
 func (s *Service) ListAlerts(ctx context.Context, in ListAlertsInput) ([]storage.MonitorAlert, int64, error) {
 	if s == nil || s.store == nil {
 		return nil, 0, nil
@@ -255,6 +321,13 @@ func (s *Service) ListAlerts(ctx context.Context, in ListAlertsInput) ([]storage
 	})
 }
 
+// BuildOverview 构建监控概览
+// 参数:
+//   ctx - 上下文
+//   userID - 用户ID
+//   recentLimit - 最近限制
+// 返回值:
+//   监控概览和错误
 func (s *Service) BuildOverview(ctx context.Context, userID string, recentLimit int) (storage.MonitorOverview, error) {
 	if s == nil || s.store == nil {
 		return storage.MonitorOverview{}, nil
@@ -262,6 +335,14 @@ func (s *Service) BuildOverview(ctx context.Context, userID string, recentLimit 
 	return s.store.BuildMonitorOverview(ctx, strings.TrimSpace(userID), recentLimit)
 }
 
+// GetRunFamily 获取运行家族
+// 参数:
+//   ctx - 上下文
+//   runID - 运行ID
+//   userID - 用户ID
+//   limit - 限制
+// 返回值:
+//   运行家族和错误
 func (s *Service) GetRunFamily(ctx context.Context, runID, userID string, limit int) (storage.MonitorRunFamily, error) {
 	if s == nil || s.store == nil {
 		return storage.MonitorRunFamily{}, nil
@@ -277,6 +358,12 @@ func (s *Service) GetRunFamily(ctx context.Context, runID, userID string, limit 
 	return family, nil
 }
 
+// AcknowledgeAlert 确认警报
+// 参数:
+//   ctx - 上下文
+//   alertID - 警报ID
+// 返回值:
+//   错误
 func (s *Service) AcknowledgeAlert(ctx context.Context, alertID string) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -296,6 +383,12 @@ func (s *Service) AcknowledgeAlert(ctx context.Context, alertID string) error {
 	return s.store.UpdateMonitorAlertStatus(ctx, alertID, "acknowledged")
 }
 
+// ResolveAlert 解决警报
+// 参数:
+//   ctx - 上下文
+//   alertID - 警报ID
+// 返回值:
+//   错误
 func (s *Service) ResolveAlert(ctx context.Context, alertID string) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -310,6 +403,12 @@ func (s *Service) ResolveAlert(ctx context.Context, alertID string) error {
 	return s.store.UpdateMonitorAlertStatus(ctx, alertID, "resolved")
 }
 
+// truncateText 截断文本
+// 参数:
+//   v - 文本
+//   maxLen - 最大长度
+// 返回值:
+//   截断后的文本
 func truncateText(v string, maxLen int) string {
 	trimmed := strings.TrimSpace(v)
 	if maxLen <= 0 || len(trimmed) <= maxLen {
@@ -318,6 +417,12 @@ func truncateText(v string, maxLen int) string {
 	return trimmed[:maxLen]
 }
 
+// summarizeAny 总结任意类型
+// 参数:
+//   v - 任意类型
+//   maxLen - 最大长度
+// 返回值:
+//   总结后的字符串
 func summarizeAny(v any, maxLen int) string {
 	if v == nil {
 		return ""

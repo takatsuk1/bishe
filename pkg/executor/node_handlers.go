@@ -14,12 +14,25 @@ import (
 	"ai/pkg/tools"
 )
 
+// NodeHandler 节点处理器函数类型
 type NodeHandler func(ctx context.Context, wf *orchestrator.Workflow, node orchestrator.Node, shared map[string]any) (NodeExecutionResult, string, error)
 
+// handleStartNode 处理开始节点
+// 参数:
+//
+//	ctx - 上下文
+//	wf - 工作流
+//	node - 节点
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点执行结果、下一个节点ID和错误
 func (e *InterpretiveExecutor) handleStartNode(ctx context.Context, wf *orchestrator.Workflow, node orchestrator.Node, shared map[string]any) (NodeExecutionResult, string, error) {
 	start := time.Now()
 	logger.Infof("[Executor] handleStartNode nodeId=%s", node.ID)
 
+	// 获取下一个节点ID
 	nextNodeID := e.getNextNode(wf, node.ID, "")
 
 	// 创建output，包含started标志和用户输入
@@ -50,6 +63,17 @@ func (e *InterpretiveExecutor) handleStartNode(ctx context.Context, wf *orchestr
 	return result, nextNodeID, nil
 }
 
+// handleEndNode 处理结束节点
+// 参数:
+//
+//	ctx - 上下文
+//	wf - 工作流
+//	node - 节点
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点执行结果、下一个节点ID和错误
 func (e *InterpretiveExecutor) handleEndNode(ctx context.Context, wf *orchestrator.Workflow, node orchestrator.Node, shared map[string]any) (NodeExecutionResult, string, error) {
 	start := time.Now()
 	logger.Infof("[Executor] handleEndNode nodeId=%s", node.ID)
@@ -66,9 +90,21 @@ func (e *InterpretiveExecutor) handleEndNode(ctx context.Context, wf *orchestrat
 	return result, "", nil
 }
 
+// handlePreInputNode 处理预输入节点
+// 参数:
+//
+//	ctx - 上下文
+//	wf - 工作流
+//	node - 节点
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点执行结果、下一个节点ID和错误
 func (e *InterpretiveExecutor) handlePreInputNode(ctx context.Context, wf *orchestrator.Workflow, node orchestrator.Node, shared map[string]any) (NodeExecutionResult, string, error) {
 	start := time.Now()
 	_ = ctx
+	// 构建节点输入
 	query := strings.TrimSpace(composeNodeInput(node.PreInput, selectNodeInputText(node, shared)))
 	if query == "" {
 		query = firstNonEmptyString(
@@ -93,6 +129,17 @@ func (e *InterpretiveExecutor) handlePreInputNode(ctx context.Context, wf *orche
 	return result, nextNodeID, nil
 }
 
+// handleToolNode 处理工具节点
+// 参数:
+//
+//	ctx - 上下文
+//	wf - 工作流
+//	node - 节点
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点执行结果、下一个节点ID和错误
 func (e *InterpretiveExecutor) handleToolNode(ctx context.Context, wf *orchestrator.Workflow, node orchestrator.Node, shared map[string]any) (NodeExecutionResult, string, error) {
 	start := time.Now()
 	logger.Infof("[Executor] handleToolNode nodeId=%s agentId=%s", node.ID, node.AgentID)
@@ -102,6 +149,7 @@ func (e *InterpretiveExecutor) handleToolNode(ctx context.Context, wf *orchestra
 		NodeType: "tool",
 	}
 
+	// 获取工具名称
 	toolName := ""
 	if node.Config != nil {
 		if name, ok := node.Config["tool_name"].(string); ok {
@@ -117,6 +165,7 @@ func (e *InterpretiveExecutor) handleToolNode(ctx context.Context, wf *orchestra
 		return result, "", err
 	}
 
+	// 获取工具实例
 	tool, err := e.toolRegistry.Get(toolName)
 	if err != nil {
 		err = fmt.Errorf("tool %s not found: %w", toolName, err)
@@ -126,6 +175,7 @@ func (e *InterpretiveExecutor) handleToolNode(ctx context.Context, wf *orchestra
 		return result, "", err
 	}
 
+	// 构建工具参数
 	params := e.buildToolParams(node, shared)
 	if _, ok := params["query"]; !ok {
 		selected := composeNodeInput(node.PreInput, selectNodeInputText(node, shared))
@@ -133,10 +183,13 @@ func (e *InterpretiveExecutor) handleToolNode(ctx context.Context, wf *orchestra
 			params["query"] = selected
 		}
 	}
+	// 应用运行时默认值
 	params = applyToolRuntimeDefaults(toolName, params, shared)
+	// 根据定义规范化参数
 	params = normalizeToolParamsByDefinition(params, tool.Info().Parameters)
 	logger.Infof("[Executor] tool params prepared nodeId=%s tool=%s params=%v", node.ID, toolName, summarizeMapTypes(params))
 
+	// 执行工具
 	output, err := tool.Execute(ctx, params)
 	if err != nil {
 		result.State = ExecutionStateFailed
@@ -159,6 +212,17 @@ func (e *InterpretiveExecutor) handleToolNode(ctx context.Context, wf *orchestra
 	return result, nextNodeID, nil
 }
 
+// handleChatModelNode 处理聊天模型节点
+// 参数:
+//
+//	ctx - 上下文
+//	wf - 工作流
+//	node - 节点
+//	shared - 共享数据
+//
+// 返回值:
+//
+//	节点执行结果、下一个节点ID和错误
 func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orchestrator.Workflow, node orchestrator.Node, shared map[string]any) (NodeExecutionResult, string, error) {
 	start := time.Now()
 	logger.Infof("[Executor] handleChatModelNode nodeId=%s", node.ID)
@@ -168,6 +232,7 @@ func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orch
 		NodeType: "chat_model",
 	}
 
+	// 获取配置
 	cfg := config.GetMainConfig()
 	baseURL := cfg.LLM.URL
 	apiKey := cfg.LLM.APIKey
@@ -185,6 +250,7 @@ func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orch
 		}
 	}
 
+	// 获取查询文本
 	query := firstNonEmptyString(
 		composeNodeInput(node.PreInput, selectNodeInputText(node, shared)),
 		stringify(shared["query"]),
@@ -195,6 +261,7 @@ func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orch
 		query = "请根据上下文给出简洁回答。"
 	}
 
+	// 验证配置
 	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(model) == "" {
 		err := fmt.Errorf("chat_model config missing url/model")
 		result.State = ExecutionStateFailed
@@ -203,6 +270,7 @@ func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orch
 		return result, "", err
 	}
 
+	// 创建客户端并调用
 	client := llm.NewClient(baseURL, apiKey)
 	if boolValueFromAny(shared["_debug_test_exec"]) {
 		logger.Infof("[Executor][TestDebug] chat_model_input nodeId=%s model=%s prompt=%s", node.ID, strings.TrimSpace(model), truncateTextForLog(query, 2000))
@@ -222,6 +290,7 @@ func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orch
 		logger.Infof("[Executor][TestDebug] chat_model_output nodeId=%s model=%s response=%s", node.ID, strings.TrimSpace(model), truncateTextForLog(resp, 2000))
 	}
 
+	// 处理输出类型
 	outputType := "string"
 	if node.Config != nil {
 		if s, ok := node.Config["output_type"].(string); ok && strings.TrimSpace(s) != "" {
@@ -231,6 +300,7 @@ func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orch
 
 	output := map[string]any{"model": model}
 	if outputType == "bool" {
+		// 布尔类型输出
 		normalized := strings.ToLower(strings.TrimSpace(resp))
 		parsed := normalized == "true"
 		output["response"] = parsed
@@ -244,7 +314,7 @@ func (e *InterpretiveExecutor) handleChatModelNode(ctx context.Context, wf *orch
 	result.Duration = time.Since(start).Milliseconds()
 
 	shared[node.ID] = output
-	// Bool judge nodes should not replace the conversational query context.
+	// 布尔判断节点不应替换对话查询上下文
 	if outputType != "bool" {
 		if q := extractQueryFromOutput(output); q != "" {
 			shared["query"] = q

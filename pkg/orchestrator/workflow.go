@@ -135,9 +135,14 @@ type Edge struct {
 }
 
 // NewWorkflow 创建一个新的工作流
-// id: 工作流ID
-// name: 工作流名称
-// 返回创建的工作流和可能的错误
+// 参数:
+//
+//	id - 工作流ID
+//	name - 工作流名称
+//
+// 返回值:
+//
+//	创建的工作流和可能的错误
 func NewWorkflow(id, name string) (*Workflow, error) {
 	// 检查工作流ID是否为空
 	if id == "" {
@@ -153,8 +158,13 @@ func NewWorkflow(id, name string) (*Workflow, error) {
 }
 
 // AddNode 向工作流添加节点
-// node: 要添加的节点
-// 返回可能的错误
+// 参数:
+//
+//	node - 要添加的节点
+//
+// 返回值:
+//
+//	可能的错误
 func (w *Workflow) AddNode(node Node) error {
 	// 检查节点ID是否为空
 	if node.ID == "" {
@@ -189,20 +199,30 @@ func (w *Workflow) AddNode(node Node) error {
 }
 
 // AddEdge 向工作流添加边
-// from: 源节点ID
-// to: 目标节点ID
-// 返回可能的错误
+// 参数:
+//
+//	from - 源节点ID
+//	to - 目标节点ID
+//
+// 返回值:
+//
+//	可能的错误
 func (w *Workflow) AddEdge(from, to string) error {
 	// 调用带标签的添加边方法，使用空标签和空映射
 	return w.AddEdgeWithLabel(from, to, "", nil)
 }
 
 // AddEdgeWithLabel 向工作流添加带标签的边
-// from: 源节点ID
-// to: 目标节点ID
-// label: 边标签
-// mapping: 数据映射
-// 返回可能的错误
+// 参数:
+//
+//	from - 源节点ID
+//	to - 目标节点ID
+//	label - 边标签
+//	mapping - 数据映射
+//
+// 返回值:
+//
+//	可能的错误
 func (w *Workflow) AddEdgeWithLabel(from, to, label string, mapping map[string]string) error {
 	// 检查源节点和目标节点ID是否为空
 	if from == "" || to == "" {
@@ -228,7 +248,9 @@ func (w *Workflow) AddEdgeWithLabel(from, to, label string, mapping map[string]s
 }
 
 // Validate 执行工作流编译前的结构检查
-// 返回可能的错误
+// 返回值:
+//
+//	可能的错误
 func (w *Workflow) Validate() error {
 	// 检查是否定义了开始节点
 	if w.StartNodeID == "" {
@@ -262,9 +284,14 @@ func (w *Workflow) Validate() error {
 }
 
 // hasCycle 检查工作流是否存在循环
-// nodes: 节点映射
-// edges: 边列表
-// 返回是否存在循环
+// 参数:
+//
+//	nodes - 节点映射
+//	edges - 边列表
+//
+// 返回值:
+//
+//	是否存在循环
 func hasCycle(nodes map[string]Node, edges []Edge) bool {
 	// 构建邻接表
 	adj := make(map[string][]string, len(nodes))
@@ -309,8 +336,13 @@ func hasCycle(nodes map[string]Node, edges []Edge) bool {
 }
 
 // cloneStringMap 克隆一个map[string]string
-// in: 输入map
-// 返回克隆后的map
+// 参数:
+//
+//	in - 输入map
+//
+// 返回值:
+//
+//	克隆后的map
 func cloneStringMap(in map[string]string) map[string]string {
 	// 如果输入为nil，返回nil
 	if in == nil {
@@ -325,8 +357,13 @@ func cloneStringMap(in map[string]string) map[string]string {
 }
 
 // clonePorts 克隆一个Port切片
-// in: 输入切片
-// 返回克隆后的切片
+// 参数:
+//
+//	in - 输入切片
+//
+// 返回值:
+//
+//	克隆后的切片
 func clonePorts(in []Port) []Port {
 	// 如果切片为空，返回nil
 	if len(in) == 0 {
@@ -338,7 +375,15 @@ func clonePorts(in []Port) []Port {
 	return out
 }
 
-// hasUncontrolledCycle 检查是否存在不包含 loop 节点的环。
+// hasUncontrolledCycle 检查是否存在不包含 loop 节点的环
+// 参数:
+//
+//	nodes - 节点映射
+//	edges - 边列表
+//
+// 返回值:
+//
+//	是否存在不包含 loop 节点的环
 func hasUncontrolledCycle(nodes map[string]Node, edges []Edge) bool {
 	adj := make(map[string][]string, len(nodes))
 	for _, e := range edges {

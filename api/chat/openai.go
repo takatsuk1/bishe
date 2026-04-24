@@ -192,6 +192,7 @@ type EmbeddingUsage struct {
 	TotalTokens  int `json:"total_tokens"`
 }
 
+// NewError 根据 HTTP 状态码构造 OpenAI 风格错误响应。
 func NewError(code int, message string) ErrorResponse {
 	var etype string
 	switch code {
@@ -206,6 +207,7 @@ func NewError(code int, message string) ErrorResponse {
 	return ErrorResponse{Error{Type: etype, Message: message}}
 }
 
+// toUsage 把内部 chat 响应里的 token 统计映射成 OpenAI usage 结构。
 func toUsage(r api.ChatResponse) Usage {
 	return Usage{
 		PromptTokens:     r.PromptEvalCount,
@@ -214,23 +216,28 @@ func toUsage(r api.ChatResponse) Usage {
 	}
 }
 
+// toolCallId 生成一个假的 OpenAI 风格 tool_call ID。
 func toolCallId() string {
 	const letterBytes = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, 8)
 	for i := range b {
+		// 从字母数字集合里随机挑字符，拼成短 ID。
 		b[i] = letterBytes[rand.Intn(len(letterBytes))]
 	}
 	return "call_" + strings.ToLower(string(b))
 }
 
+// toToolCalls 把内部工具调用结构转换成 OpenAI 响应里的 tool_calls。
 func toToolCalls(tc []api.ToolCall) []ToolCall {
 	toolCalls := make([]ToolCall, len(tc))
 	for i, tc := range tc {
+		// 每个内部 tool call 都补齐 OpenAI 需要的 id/type/name/index 字段。
 		toolCalls[i].ID = toolCallId()
 		toolCalls[i].Type = "function"
 		toolCalls[i].Function.Name = tc.Function.Name
 		toolCalls[i].Index = tc.Function.Index
 
+		// OpenAI 协议要求 arguments 是 JSON 字符串，这里先把参数对象序列化。
 		args, err := json.Marshal(tc.Function.Arguments)
 		if err != nil {
 			slog.Error("could not marshall function arguments to json", "error", err)
@@ -242,6 +249,7 @@ func toToolCalls(tc []api.ToolCall) []ToolCall {
 	return toolCalls
 }
 
+// toChatCompletion 把内部一次完整 chat 响应包装成 OpenAI 非流式响应。
 func toChatCompletion(id string, r api.ChatResponse) ChatCompletion {
 	toolCalls := toToolCalls(r.Message.ToolCalls)
 	return ChatCompletion{
@@ -259,6 +267,7 @@ func toChatCompletion(id string, r api.ChatResponse) ChatCompletion {
 				ToolCalls:        toolCalls,
 			},
 			FinishReason: func(reason string) *string {
+				// 如果本次响应里带了工具调用，就强制把 finish_reason 改成 tool_calls。
 				if len(toolCalls) > 0 {
 					reason = "tool_calls"
 				}
@@ -272,6 +281,7 @@ func toChatCompletion(id string, r api.ChatResponse) ChatCompletion {
 	}
 }
 
+// toChunk 把内部 chat 响应包装成 OpenAI 流式 chunk。
 func toChunk(id string, r api.ChatResponse, toolCallSent bool) ChatCompletionChunk {
 	toolCalls := toToolCalls(r.Message.ToolCalls)
 	return ChatCompletionChunk{
@@ -289,6 +299,7 @@ func toChunk(id string, r api.ChatResponse, toolCallSent bool) ChatCompletionChu
 				ToolCalls:        toolCalls,
 			},
 			FinishReason: func(reason string) *string {
+				// 流式场景下如果工具调用已经发过，就用固定的 tool_calls 结束原因。
 				if len(reason) > 0 {
 					if toolCallSent {
 						return &finishReasonToolCalls
@@ -301,6 +312,7 @@ func toChunk(id string, r api.ChatResponse, toolCallSent bool) ChatCompletionChu
 	}
 }
 
+// toUsageGenerate 把内部 generate 响应的统计信息映射成 OpenAI usage。
 func toUsageGenerate(r api.GenerateResponse) Usage {
 	return Usage{
 		PromptTokens:     r.PromptEvalCount,
@@ -309,6 +321,7 @@ func toUsageGenerate(r api.GenerateResponse) Usage {
 	}
 }
 
+// toCompletion 把内部 generate 响应包装成 OpenAI text completion。
 func toCompletion(id string, r api.GenerateResponse) Completion {
 	return Completion{
 		Id:                id,
@@ -330,6 +343,7 @@ func toCompletion(id string, r api.GenerateResponse) Completion {
 	}
 }
 
+// toCompleteChunk 把内部 generate 响应包装成流式 text completion chunk。
 func toCompleteChunk(id string, r api.GenerateResponse) CompletionChunk {
 	return CompletionChunk{
 		Id:                id,
@@ -350,6 +364,7 @@ func toCompleteChunk(id string, r api.GenerateResponse) CompletionChunk {
 	}
 }
 
+// toListCompletion 把内部模型列表转换成 OpenAI models/list 风格结构。
 func toListCompletion(r api.ListResponse) ListCompletion {
 	var data []Model
 	for _, m := range r.Models {
@@ -366,10 +381,12 @@ func toListCompletion(r api.ListResponse) ListCompletion {
 	}
 }
 
+// toEmbeddingList 把内部 embedding 响应转换成 OpenAI embeddings/list 风格结构。
 func toEmbeddingList(model string, r api.EmbedResponse) EmbeddingList {
 	if r.Embeddings != nil {
 		var data []Embedding
 		for i, e := range r.Embeddings {
+			// 每一条 embedding 都要带上 index，便于客户端对应原始输入。
 			data = append(data, Embedding{
 				Object:    "embedding",
 				Embedding: e,
@@ -391,6 +408,7 @@ func toEmbeddingList(model string, r api.EmbedResponse) EmbeddingList {
 	return EmbeddingList{}
 }
 
+// toModel 把内部模型详情压缩成 OpenAI 兼容的单个 model 对象。
 func toModel(r api.ShowResponse, m string) Model {
 	return Model{
 		Id:      m,
@@ -399,13 +417,16 @@ func toModel(r api.ShowResponse, m string) Model {
 	}
 }
 
+// fromChatRequest 把 OpenAI 风格 chat/completions 请求翻译成内部 chat 请求。
 func fromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 	var messages []api.Message
 	for _, msg := range r.Messages {
 		switch content := msg.Content.(type) {
 		case string:
+			// 最简单的文本消息可以直接映射。
 			messages = append(messages, api.Message{Role: msg.Role, Content: content})
 		case []any:
+			// 多模态消息会拆成 text/image_url 等分片，逐个转换。
 			for _, c := range content {
 				data, ok := c.(map[string]any)
 				if !ok {
@@ -413,12 +434,14 @@ func fromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 				}
 				switch data["type"] {
 				case "text":
+					// 纯文本分片直接提取 text 字段。
 					text, ok := data["text"].(string)
 					if !ok {
 						return nil, errors.New("invalid message format")
 					}
 					messages = append(messages, api.Message{Role: msg.Role, Content: text})
 				case "image_url":
+					// 图片分片只支持 data:image/...;base64 这种内联格式。
 					var url string
 					if urlMap, ok := data["image_url"].(map[string]any); ok {
 						if url, ok = urlMap["url"].(string); !ok {
@@ -433,6 +456,7 @@ func fromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 					types := []string{"jpeg", "jpg", "png"}
 					valid := false
 					for _, t := range types {
+						// 校验并剥掉 data URL 前缀，留下纯 base64 数据。
 						prefix := "data:image/" + t + ";base64,"
 						if strings.HasPrefix(url, prefix) {
 							url = strings.TrimPrefix(url, prefix)
@@ -445,6 +469,7 @@ func fromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 						return nil, errors.New("invalid image input")
 					}
 
+					// 把 base64 图片解码成内部使用的原始字节数组。
 					img, err := base64.StdEncoding.DecodeString(url)
 					if err != nil {
 						return nil, errors.New("invalid message format")
@@ -456,12 +481,14 @@ func fromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 				}
 			}
 		default:
+			// 非字符串内容只在 tool_calls 场景下接受，其它类型一律报错。
 			if msg.ToolCalls == nil {
 				return nil, fmt.Errorf("invalid message content type: %T", content)
 			}
 
 			toolCalls := make([]api.ToolCall, len(msg.ToolCalls))
 			for i, tc := range msg.ToolCalls {
+				// OpenAI 请求里的 arguments 是字符串，这里再反解成对象。
 				toolCalls[i].Function.Name = tc.Function.Name
 				err := json.Unmarshal([]byte(tc.Function.Arguments), &toolCalls[i].Function.Arguments)
 				if err != nil {
@@ -472,6 +499,7 @@ func fromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 		}
 	}
 
+	// 把 OpenAI 参数名翻译成内部 options 字段名。
 	options := make(map[string]any)
 
 	switch stop := r.Stop.(type) {
@@ -517,6 +545,7 @@ func fromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 
 	var format json.RawMessage
 	if r.ResponseFormat != nil {
+		// 兼容 json_object 和 json_schema 两种响应格式表达方式。
 		switch strings.ToLower(strings.TrimSpace(r.ResponseFormat.Type)) {
 		// Support the old "json_object" type for OpenAI compatibility
 		case "json_object":
@@ -539,6 +568,7 @@ func fromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 	}, nil
 }
 
+// fromCompleteRequest 把 OpenAI 风格 completions 请求翻译成内部 generate 请求。
 func fromCompleteRequest(r CompletionRequest) (api.GenerateRequest, error) {
 	options := make(map[string]any)
 
@@ -557,6 +587,7 @@ func fromCompleteRequest(r CompletionRequest) (api.GenerateRequest, error) {
 		options["stop"] = stops
 	}
 
+	// 把外部常见参数名逐个映射成内部 generate options。
 	if r.MaxTokens != nil {
 		options["num_predict"] = *r.MaxTokens
 	}
@@ -623,6 +654,7 @@ type EmbedWriter struct {
 	model string
 }
 
+// writeError 把内部错误响应重新包装成 OpenAI 风格错误格式。
 func (w *BaseWriter) writeError(data []byte) (int, error) {
 	var serr api.StatusError
 	err := json.Unmarshal(data, &serr)
@@ -639,6 +671,7 @@ func (w *BaseWriter) writeError(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// writeResponse 把内部 chat 响应写成 OpenAI 非流式或 SSE 流式响应。
 func (w *ChatWriter) writeResponse(data []byte) (int, error) {
 	var chatResponse api.ChatResponse
 	err := json.Unmarshal(data, &chatResponse)
@@ -648,12 +681,14 @@ func (w *ChatWriter) writeResponse(data []byte) (int, error) {
 
 	// chat chunk
 	if w.stream {
+		// 流式场景下，把每个内部响应块包装成 SSE data: {...}。
 		c := toChunk(w.id, chatResponse, w.toolCallSent)
 		d, err := json.Marshal(c)
 		if err != nil {
 			return 0, err
 		}
 		if !w.toolCallSent && len(c.Choices) > 0 && len(c.Choices[0].Delta.ToolCalls) > 0 {
+			// 一旦工具调用已经发出，后续的 finish_reason 就按 tool_calls 处理。
 			w.toolCallSent = true
 		}
 
@@ -664,6 +699,7 @@ func (w *ChatWriter) writeResponse(data []byte) (int, error) {
 		}
 
 		if chatResponse.Done {
+			// 结束块除了 [DONE]，还可以按需额外附一条 usage 汇总。
 			if w.streamOptions != nil && w.streamOptions.IncludeUsage {
 				u := toUsage(chatResponse)
 				c.Usage = &u
@@ -687,6 +723,7 @@ func (w *ChatWriter) writeResponse(data []byte) (int, error) {
 	}
 
 	// chat completion
+	// 非流式场景下一次性写出完整 JSON。
 	w.ResponseWriter.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w.ResponseWriter).Encode(toChatCompletion(w.id, chatResponse))
 	if err != nil {
@@ -696,6 +733,7 @@ func (w *ChatWriter) writeResponse(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// Write 根据状态码分流到正常响应或错误响应。
 func (w *ChatWriter) Write(data []byte) (int, error) {
 	code := w.ResponseWriter.Status()
 	if code != http.StatusOK {
@@ -705,6 +743,7 @@ func (w *ChatWriter) Write(data []byte) (int, error) {
 	return w.writeResponse(data)
 }
 
+// writeResponse 把内部 generate 响应写成 OpenAI completions 风格输出。
 func (w *CompleteWriter) writeResponse(data []byte) (int, error) {
 	var generateResponse api.GenerateResponse
 	err := json.Unmarshal(data, &generateResponse)
@@ -714,6 +753,7 @@ func (w *CompleteWriter) writeResponse(data []byte) (int, error) {
 
 	// completion chunk
 	if w.stream {
+		// 流式 completions 也走 SSE，每个 chunk 都包成 data: {...}。
 		c := toCompleteChunk(w.id, generateResponse)
 		if w.streamOptions != nil && w.streamOptions.IncludeUsage {
 			c.Usage = &Usage{}
@@ -762,6 +802,7 @@ func (w *CompleteWriter) writeResponse(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// Write 根据 HTTP 状态码决定走正常响应还是错误响应。
 func (w *CompleteWriter) Write(data []byte) (int, error) {
 	code := w.ResponseWriter.Status()
 	if code != http.StatusOK {
@@ -771,6 +812,7 @@ func (w *CompleteWriter) Write(data []byte) (int, error) {
 	return w.writeResponse(data)
 }
 
+// writeResponse 把内部模型列表写成 OpenAI 风格列表响应。
 func (w *ListWriter) writeResponse(data []byte) (int, error) {
 	var listResponse api.ListResponse
 	err := json.Unmarshal(data, &listResponse)
@@ -787,6 +829,7 @@ func (w *ListWriter) writeResponse(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// Write 根据状态码输出模型列表或错误信息。
 func (w *ListWriter) Write(data []byte) (int, error) {
 	code := w.ResponseWriter.Status()
 	if code != http.StatusOK {
@@ -796,6 +839,7 @@ func (w *ListWriter) Write(data []byte) (int, error) {
 	return w.writeResponse(data)
 }
 
+// writeResponse 把内部模型详情写成 OpenAI 单模型响应。
 func (w *RetrieveWriter) writeResponse(data []byte) (int, error) {
 	var showResponse api.ShowResponse
 	err := json.Unmarshal(data, &showResponse)
@@ -813,6 +857,7 @@ func (w *RetrieveWriter) writeResponse(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// Write 根据状态码输出模型详情或错误信息。
 func (w *RetrieveWriter) Write(data []byte) (int, error) {
 	code := w.ResponseWriter.Status()
 	if code != http.StatusOK {
@@ -822,6 +867,7 @@ func (w *RetrieveWriter) Write(data []byte) (int, error) {
 	return w.writeResponse(data)
 }
 
+// writeResponse 把内部 embedding 结果写成 OpenAI embeddings 响应。
 func (w *EmbedWriter) writeResponse(data []byte) (int, error) {
 	var embedResponse api.EmbedResponse
 	err := json.Unmarshal(data, &embedResponse)
@@ -838,6 +884,7 @@ func (w *EmbedWriter) writeResponse(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// Write 根据状态码输出 embedding 结果或错误信息。
 func (w *EmbedWriter) Write(data []byte) (int, error) {
 	code := w.ResponseWriter.Status()
 	if code != http.StatusOK {
@@ -847,119 +894,11 @@ func (w *EmbedWriter) Write(data []byte) (int, error) {
 	return w.writeResponse(data)
 }
 
-func ListMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		w := &ListWriter{
-			BaseWriter: BaseWriter{ResponseWriter: c.Writer},
-		}
-
-		c.Writer = w
-
-		c.Next()
-	}
-}
-
-func RetrieveMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var b bytes.Buffer
-		if err := json.NewEncoder(&b).Encode(api.ShowRequest{Name: c.Param("model")}); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, NewError(http.StatusInternalServerError, err.Error()))
-			return
-		}
-
-		c.Request.Body = io.NopCloser(&b)
-
-		// response writer
-		w := &RetrieveWriter{
-			BaseWriter: BaseWriter{ResponseWriter: c.Writer},
-			model:      c.Param("model"),
-		}
-
-		c.Writer = w
-
-		c.Next()
-	}
-}
-
-func CompletionsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req CompletionRequest
-		err := c.ShouldBindJSON(&req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
-
-		var b bytes.Buffer
-		genReq, err := fromCompleteRequest(req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
-
-		if err := json.NewEncoder(&b).Encode(genReq); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, NewError(http.StatusInternalServerError, err.Error()))
-			return
-		}
-
-		c.Request.Body = io.NopCloser(&b)
-
-		w := &CompleteWriter{
-			BaseWriter:    BaseWriter{ResponseWriter: c.Writer},
-			stream:        req.Stream,
-			id:            fmt.Sprintf("cmpl-%d", rand.Intn(999)),
-			streamOptions: req.StreamOptions,
-		}
-
-		c.Writer = w
-		c.Next()
-	}
-}
-
-func EmbeddingsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req EmbedRequest
-		err := c.ShouldBindJSON(&req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
-
-		if req.Input == "" {
-			req.Input = []string{""}
-		}
-
-		if req.Input == nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, NewError(http.StatusBadRequest, "invalid input"))
-			return
-		}
-
-		if v, ok := req.Input.([]any); ok && len(v) == 0 {
-			c.AbortWithStatusJSON(http.StatusBadRequest, NewError(http.StatusBadRequest, "invalid input"))
-			return
-		}
-
-		var b bytes.Buffer
-		if err := json.NewEncoder(&b).Encode(api.EmbedRequest{Model: req.Model, Input: req.Input}); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, NewError(http.StatusInternalServerError, err.Error()))
-			return
-		}
-
-		c.Request.Body = io.NopCloser(&b)
-
-		w := &EmbedWriter{
-			BaseWriter: BaseWriter{ResponseWriter: c.Writer},
-			model:      req.Model,
-		}
-
-		c.Writer = w
-
-		c.Next()
-	}
-}
-
+// ChatMiddleware 是当前实际挂在 /v1/chat/completions 上的兼容层中间件。
+// 它负责把 OpenAI 请求转换成内部格式，并把响应 writer 替换成兼容 writer。
 func ChatMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 先按 OpenAI 兼容结构读取原始请求体。
 		var req ChatCompletionRequest
 		err := c.ShouldBindJSON(&req)
 		if err != nil {
@@ -975,6 +914,7 @@ func ChatMiddleware() gin.HandlerFunc {
 
 		var b bytes.Buffer
 
+		// 把兼容请求翻译成内部 api.ChatRequest。
 		chatReq, err := fromChatRequest(req)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, NewError(http.StatusBadRequest, err.Error()))
@@ -986,8 +926,10 @@ func ChatMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		// 用转换后的请求体替换原始 body，让后面的 chatHandler 按内部协议继续处理。
 		c.Request.Body = io.NopCloser(&b)
 
+		// 再把 ResponseWriter 包起来，把 chatHandler 的内部响应翻译回 OpenAI 格式。
 		w := &ChatWriter{
 			BaseWriter:    BaseWriter{ResponseWriter: c.Writer},
 			stream:        req.Stream,

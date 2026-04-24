@@ -1,4 +1,4 @@
-package orchestrator
+package noncore_service
 
 import (
 	"encoding/json"
@@ -7,12 +7,12 @@ import (
 	"strings"
 )
 
-type mcpStdioServerConfig struct {
+type MCPStdioServerConfig struct {
 	Command string
 	Args    []string
 }
 
-func getMCPMode(config map[string]any) string {
+func GetMCPMode(config map[string]any) string {
 	mode := strings.ToLower(strings.TrimSpace(getStringMap(config, "mcp_mode", "")))
 	if mode == "" {
 		return "url"
@@ -20,13 +20,13 @@ func getMCPMode(config map[string]any) string {
 	return mode
 }
 
-func extractMCPStdioServer(config map[string]any) (string, mcpStdioServerConfig, error) {
-	servers, err := parseMCPServers(config)
+func ExtractMCPStdioServer(config map[string]any) (string, MCPStdioServerConfig, error) {
+	servers, err := ParseMCPServers(config)
 	if err != nil {
-		return "", mcpStdioServerConfig{}, err
+		return "", MCPStdioServerConfig{}, err
 	}
 	if len(servers) == 0 {
-		return "", mcpStdioServerConfig{}, fmt.Errorf("mcpServers is empty")
+		return "", MCPStdioServerConfig{}, fmt.Errorf("mcpServers is empty")
 	}
 
 	serverName := strings.TrimSpace(getStringMap(config, "server_name", ""))
@@ -36,7 +36,7 @@ func extractMCPStdioServer(config map[string]any) (string, mcpStdioServerConfig,
 	if serverName != "" {
 		cfg, ok := servers[serverName]
 		if !ok {
-			return "", mcpStdioServerConfig{}, fmt.Errorf("mcp server %q not found", serverName)
+			return "", MCPStdioServerConfig{}, fmt.Errorf("mcp server %q not found", serverName)
 		}
 		return serverName, cfg, nil
 	}
@@ -50,7 +50,7 @@ func extractMCPStdioServer(config map[string]any) (string, mcpStdioServerConfig,
 	return selected, servers[selected], nil
 }
 
-func parseMCPServers(config map[string]any) (map[string]mcpStdioServerConfig, error) {
+func ParseMCPServers(config map[string]any) (map[string]MCPStdioServerConfig, error) {
 	if config == nil {
 		return nil, fmt.Errorf("mcp config is empty")
 	}
@@ -70,7 +70,7 @@ func parseMCPServers(config map[string]any) (map[string]mcpStdioServerConfig, er
 
 	command := strings.TrimSpace(getStringMap(config, "command", ""))
 	if command != "" {
-		return map[string]mcpStdioServerConfig{
+		return map[string]MCPStdioServerConfig{
 			"default": {
 				Command: command,
 				Args:    parseStringSlice(config["args"]),
@@ -81,7 +81,7 @@ func parseMCPServers(config map[string]any) (map[string]mcpStdioServerConfig, er
 	return nil, fmt.Errorf("mcpServers config is required")
 }
 
-func parseMCPServersRaw(raw any) (map[string]mcpStdioServerConfig, error) {
+func parseMCPServersRaw(raw any) (map[string]MCPStdioServerConfig, error) {
 	switch v := raw.(type) {
 	case string:
 		text := strings.TrimSpace(v)
@@ -101,7 +101,7 @@ func parseMCPServersRaw(raw any) (map[string]mcpStdioServerConfig, error) {
 			return parseMCPServersRaw(nested)
 		}
 
-		servers := make(map[string]mcpStdioServerConfig, len(v))
+		servers := make(map[string]MCPStdioServerConfig, len(v))
 		for name, rawCfg := range v {
 			cfgMap, ok := rawCfg.(map[string]any)
 			if !ok {
@@ -112,7 +112,7 @@ func parseMCPServersRaw(raw any) (map[string]mcpStdioServerConfig, error) {
 			if command == "" {
 				continue
 			}
-			servers[name] = mcpStdioServerConfig{Command: command, Args: args}
+			servers[name] = MCPStdioServerConfig{Command: command, Args: args}
 		}
 		if len(servers) == 0 {
 			return nil, fmt.Errorf("mcpServers has no valid entries")

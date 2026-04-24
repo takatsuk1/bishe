@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"ai/config"
 	"ai/pkg/authz"
+	"ai/pkg/noncore_service"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -50,10 +51,10 @@ func (api *UserToolAPI) warmupStdioMCPTools() {
 		if strings.TrimSpace(def.ToolType) != string(tools.ToolTypeMCP) {
 			continue
 		}
-		if getMCPMode(def.Config) != "stdio" {
+		if noncore_service.GetMCPMode(def.Config) != "stdio" {
 			continue
 		}
-		serverName, serverCfg, parseErr := extractMCPStdioServer(def.Config)
+		serverName, serverCfg, parseErr := noncore_service.ExtractMCPStdioServer(def.Config)
 		if parseErr != nil {
 			logger.Warnf("[UserToolAPI] warmup parse config failed tool_id=%s err=%v", def.ToolID, parseErr)
 			continue
@@ -339,18 +340,18 @@ func (api *UserToolAPI) repairAmapMCPToolConfig(ctx context.Context, def *storag
 
 	def.Config["mcp_mode"] = "url"
 
-	configuredToolName := strings.TrimSpace(getStringMap(def.Config, "tool_name", ""))
+	configuredToolName := strings.TrimSpace(getConfigString(def.Config, "tool_name", ""))
 	if configuredToolName == "" {
 		def.Config["tool_name"] = "auto"
 	}
 
-	serverURL := strings.TrimSpace(getStringMap(def.Config, "server_url", ""))
+	serverURL := strings.TrimSpace(getConfigString(def.Config, "server_url", ""))
 	if serverURL == "" {
 		serverURL = strings.TrimSpace(fallbackServerURL)
 	}
 
 	if existing, err := api.storage.GetUserTool(ctx, def.ToolID); err == nil && existing != nil {
-		existingServerURL := strings.TrimSpace(getStringMap(existing.Config, "server_url", ""))
+		existingServerURL := strings.TrimSpace(getConfigString(existing.Config, "server_url", ""))
 		if serverURL == "" && existingServerURL != "" {
 			serverURL = existingServerURL
 		}
@@ -428,7 +429,7 @@ type MCPServerTool struct {
 
 func (api *UserToolAPI) handleListMCPTools(w http.ResponseWriter, r *http.Request, toolID string) {
 	ctx := r.Context()
-	_, ok := authenticatedUserID(r)
+	_, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
@@ -443,7 +444,7 @@ func (api *UserToolAPI) handleListMCPTools(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.tool.read", authz.ScopeOwn, def.UserID, def.UserID == "system"); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.tool.read", authz.ScopeOwn, def.UserID, def.UserID == "system"); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -452,7 +453,7 @@ func (api *UserToolAPI) handleListMCPTools(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	mode := getMCPMode(def.Config)
+	mode := noncore_service.GetMCPMode(def.Config)
 	resp := make([]MCPServerTool, 0)
 	if mode == "stdio" {
 		manager := tools.GetStdioMCPManager()
@@ -477,7 +478,7 @@ func (api *UserToolAPI) handleListMCPTools(w http.ResponseWriter, r *http.Reques
 			resp = append(resp, MCPServerTool{Name: info.Name, Description: info.Description})
 		}
 	} else {
-		serverURL := strings.TrimSpace(getStringMap(def.Config, "server_url", ""))
+		serverURL := strings.TrimSpace(getConfigString(def.Config, "server_url", ""))
 		if serverURL == "" {
 			http.Error(w, "mcp server_url is required", http.StatusBadRequest)
 			return
@@ -509,7 +510,7 @@ func (api *UserToolAPI) handleListMCPTools(w http.ResponseWriter, r *http.Reques
 func (api *UserToolAPI) handleStartMCPTool(w http.ResponseWriter, r *http.Request, toolID string) {
 	ctx := r.Context()
 	logger.Infof("[UserToolAPI] StartMCPTool start tool_id=%s", toolID)
-	_, ok := authenticatedUserID(r)
+	_, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
@@ -524,7 +525,7 @@ func (api *UserToolAPI) handleStartMCPTool(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.tool.read", authz.ScopeOwn, def.UserID, def.UserID == "system"); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.tool.read", authz.ScopeOwn, def.UserID, def.UserID == "system"); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -532,12 +533,12 @@ func (api *UserToolAPI) handleStartMCPTool(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "tool type is not mcp", http.StatusBadRequest)
 		return
 	}
-	if getMCPMode(def.Config) != "stdio" {
+	if noncore_service.GetMCPMode(def.Config) != "stdio" {
 		http.Error(w, "only stdio mcp can be started", http.StatusBadRequest)
 		return
 	}
 
-	serverName, serverCfg, err := extractMCPStdioServer(def.Config)
+	serverName, serverCfg, err := noncore_service.ExtractMCPStdioServer(def.Config)
 	if err != nil {
 		logger.Warnf("[UserToolAPI] StartMCPTool parse config failed tool_id=%s err=%v", toolID, err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -588,7 +589,7 @@ func (api *UserToolAPI) handleStartMCPTool(w http.ResponseWriter, r *http.Reques
 
 func (api *UserToolAPI) handleStopMCPTool(w http.ResponseWriter, r *http.Request, toolID string) {
 	ctx := r.Context()
-	_, ok := authenticatedUserID(r)
+	_, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
@@ -603,7 +604,7 @@ func (api *UserToolAPI) handleStopMCPTool(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.tool.read", authz.ScopeOwn, def.UserID, def.UserID == "system"); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.tool.read", authz.ScopeOwn, def.UserID, def.UserID == "system"); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -611,7 +612,7 @@ func (api *UserToolAPI) handleStopMCPTool(w http.ResponseWriter, r *http.Request
 		http.Error(w, "tool type is not mcp", http.StatusBadRequest)
 		return
 	}
-	if getMCPMode(def.Config) != "stdio" {
+	if noncore_service.GetMCPMode(def.Config) != "stdio" {
 		http.Error(w, "only stdio mcp can be stopped", http.StatusBadRequest)
 		return
 	}
@@ -631,7 +632,7 @@ func (api *UserToolAPI) handleListUserTools(w http.ResponseWriter, r *http.Reque
 	logger.Infof("[UserToolAPI] ListUserTools")
 
 	ctx := r.Context()
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
@@ -655,7 +656,7 @@ func (api *UserToolAPI) handleListUserTools(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	tools := append(systemTools, userTools...)
-	if hasAllScopeAccess(r, "orchestrator.tool.read") {
+	if noncore_service.HasAllScopeAccess(r, "orchestrator.tool.read") {
 		allTools, allErr := api.storage.ListUserTools(ctx, "")
 		if allErr != nil {
 			logger.Errorf("[UserToolAPI] List all tools failed: %v", allErr)
@@ -703,12 +704,12 @@ func (api *UserToolAPI) handleCreateUserTool(w http.ResponseWriter, r *http.Requ
 	}
 
 	ctx := r.Context()
-	userID, ok := authenticatedUserID(r)
+	userID, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.tool.manage", authz.ScopeOwn, userID, false); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.tool.manage", authz.ScopeOwn, userID, false); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -739,20 +740,20 @@ func (api *UserToolAPI) handleGetUserTool(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	requesterID, _ := authenticatedUserID(r)
-	allowAllRead := hasAllScopeAccess(r, "orchestrator.tool.read")
+	requesterID, _ := noncore_service.AuthenticatedUserID(r)
+	allowAllRead := noncore_service.HasAllScopeAccess(r, "orchestrator.tool.read")
 	allowSystemRead := true
 	def, err := api.storage.GetUserToolScoped(ctx, toolID, requesterID, allowSystemRead, allowAllRead)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	_, ok := authenticatedUserID(r)
+	_, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	if _, allowed := authorizeResourceAccess(r, "orchestrator.tool.read", authz.ScopeOwn, def.UserID, def.UserID == "system"); !allowed {
+	if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.tool.read", authz.ScopeOwn, def.UserID, def.UserID == "system"); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -782,17 +783,17 @@ func (api *UserToolAPI) handleUpdateUserTool(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	_, ok := authenticatedUserID(r)
+	_, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
 	if existing.UserID == "system" {
-		if _, allowed := authorizeResourceAccess(r, "orchestrator.tool.system.manage", authz.ScopeAll, "", true); !allowed {
+		if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.tool.system.manage", authz.ScopeAll, "", true); !allowed {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-	} else if _, allowed := authorizeResourceAccess(r, "orchestrator.tool.manage", authz.ScopeOwn, existing.UserID, false); !allowed {
+	} else if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.tool.manage", authz.ScopeOwn, existing.UserID, false); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -827,7 +828,7 @@ func (api *UserToolAPI) handleDeleteUserTool(w http.ResponseWriter, r *http.Requ
 	logger.Infof("[UserToolAPI] DeleteUserTool: %s", toolID)
 
 	ctx := r.Context()
-	_, ok := authenticatedUserID(r)
+	_, ok := noncore_service.AuthenticatedUserID(r)
 	if !ok {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
@@ -843,18 +844,18 @@ func (api *UserToolAPI) handleDeleteUserTool(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	allowSystemManageAll := hasAllScopeAccess(r, "orchestrator.tool.system.manage")
+	allowSystemManageAll := noncore_service.HasAllScopeAccess(r, "orchestrator.tool.system.manage")
 	if existing.UserID == "system" {
-		if _, allowed := authorizeResourceAccess(r, "orchestrator.tool.system.manage", authz.ScopeAll, "", true); !allowed {
+		if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.tool.system.manage", authz.ScopeAll, "", true); !allowed {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-	} else if _, allowed := authorizeResourceAccess(r, "orchestrator.tool.manage", authz.ScopeOwn, existing.UserID, false); !allowed {
+	} else if _, allowed := noncore_service.AuthorizeResourceAccess(r, "orchestrator.tool.manage", authz.ScopeOwn, existing.UserID, false); !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
-	requesterID, _ := authenticatedUserID(r)
+	requesterID, _ := noncore_service.AuthenticatedUserID(r)
 	if err := api.storage.DeleteUserToolScoped(ctx, toolID, requesterID, true, allowSystemManageAll); err != nil {
 		logger.Errorf("[UserToolAPI] DeleteUserTool failed: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -907,17 +908,14 @@ func convertParameters(params []ToolParameterRequest) []storage.ToolParameterDef
 	return result
 }
 
-func ConvertToToolsParameter(params []storage.ToolParameterDef) []tools.ToolParameter {
-	result := make([]tools.ToolParameter, 0, len(params))
-	for _, p := range params {
-		result = append(result, tools.ToolParameter{
-			Name:        p.Name,
-			Type:        tools.ParameterType(p.Type),
-			Required:    p.Required,
-			Description: p.Description,
-			Default:     p.Default,
-			Enum:        p.Enum,
-		})
+func getConfigString(m map[string]interface{}, key string, fallback string) string {
+	if m == nil {
+		return fallback
 	}
-	return result
+	if raw, ok := m[key]; ok {
+		if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return fallback
 }

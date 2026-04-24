@@ -19,15 +19,15 @@ import (
 )
 
 const (
-	Test418WorkflowID = "test 4.18"
+	Test418WorkflowID       = "test 4.18"
 	Test418WorkflowWorkerID = "test 4.18_worker"
-	Test418DefaultTaskType = "test 4.18_default"
+	Test418DefaultTaskType  = "test 4.18_default"
 )
 
 type ctxKeyTaskManager struct{}
 
 var Test418NodeTypeByID = map[string]string{
-	"N1": "start",
+	"N1":       "start",
 	"N_06d88b": "chatmodel",
 	"N_25428c": "tool",
 	"N_2ba7a0": "chatmodel",
@@ -38,16 +38,16 @@ type Agent struct {
 	orchestratorEngine orchestrator.Engine
 	llmClient          *llm.Client
 	chatModel          string
-	AkshareOneMcpTool tools.Tool
-	AgentInfoTool tools.Tool
-	JinaReaderTool tools.Tool
-	TavilyTool tools.Tool
-	JsonFileTool tools.Tool
-	BaziTool tools.Tool
-	FetchTool tools.Tool
-	AmapTool tools.Tool
-	MysqlExecTool tools.Tool
-	ScriptExecTool tools.Tool
+	AkshareOneMcpTool  tools.Tool
+	AgentInfoTool      tools.Tool
+	JinaReaderTool     tools.Tool
+	TavilyTool         tools.Tool
+	JsonFileTool       tools.Tool
+	BaziTool           tools.Tool
+	FetchTool          tools.Tool
+	AmapTool           tools.Tool
+	MysqlExecTool      tools.Tool
+	ScriptExecTool     tools.Tool
 }
 
 type workflowNodeWorker struct {
@@ -55,8 +55,8 @@ type workflowNodeWorker struct {
 }
 
 type stepReporter struct {
-	agent string
-	taskID string
+	agent   string
+	taskID  string
 	manager internaltm.Manager
 }
 
@@ -74,62 +74,62 @@ func NewAgent() (*Agent, error) {
 	}
 	AkshareOneMcpToolConfig := tools.MCPToolConfig{
 		ServerURL: "",
-		ToolName: "auto",
+		ToolName:  "auto",
 	}
-	agent.AkshareOneMcpTool = tools.NewMCPTool("akshare-one-mcp", "AkShare MCP 服务，由 Agent 通过 tool_name 自动选择财经子工具", []tools.ToolParameter{{Name: "tool_name", Type: tools.ParamTypeString, Required: true, Description: "要调用的 AkShare MCP 子工具名"},{Name: "arguments", Type: tools.ParamTypeObject, Required: false, Description: "AkShare MCP 子工具参数对象，优先使用该字段"},{Name: "query", Type: tools.ParamTypeString, Required: false, Description: "兼容字段；若未提供 arguments，则 query 等参数会被透传"},}, AkshareOneMcpToolConfig)
+	agent.AkshareOneMcpTool = tools.NewMCPTool("akshare-one-mcp", "AkShare MCP 服务，由 Agent 通过 tool_name 自动选择财经子工具", []tools.ToolParameter{{Name: "tool_name", Type: tools.ParamTypeString, Required: true, Description: "要调用的 AkShare MCP 子工具名"}, {Name: "arguments", Type: tools.ParamTypeObject, Required: false, Description: "AkShare MCP 子工具参数对象，优先使用该字段"}, {Name: "query", Type: tools.ParamTypeString, Required: false, Description: "兼容字段；若未提供 arguments，则 query 等参数会被透传"}}, AkshareOneMcpToolConfig)
 	AgentInfoToolConfig := tools.HTTPToolConfig{
-		Method: "GET",
-		URL: "http://127.0.0.1:8080/v1/orchestrator/agents",
+		Method:  "GET",
+		URL:     "http://127.0.0.1:8080/v1/orchestrator/agents",
 		Timeout: time.Duration(30) * time.Second,
 	}
 	agent.AgentInfoTool = tools.NewHTTPTool("agent_info", "查询当前系统内可调用的 Agent 列表", []tools.ToolParameter{}, AgentInfoToolConfig)
 	JinaReaderToolConfig := tools.HTTPToolConfig{
-		Method: "GET",
-		URL: "https://r.jina.ai/{{url}}",
+		Method:  "GET",
+		URL:     "https://r.jina.ai/{{url}}",
 		Timeout: time.Duration(60) * time.Second,
 	}
-	agent.JinaReaderTool = tools.NewHTTPTool("jina_reader", "通过 Jina Reader 读取网页正文", []tools.ToolParameter{{Name: "url", Type: tools.ParamTypeString, Required: true, Description: "待读取网页链接，需为 http/https"},}, JinaReaderToolConfig)
+	agent.JinaReaderTool = tools.NewHTTPTool("jina_reader", "通过 Jina Reader 读取网页正文", []tools.ToolParameter{{Name: "url", Type: tools.ParamTypeString, Required: true, Description: "待读取网页链接，需为 http/https"}}, JinaReaderToolConfig)
 	TavilyToolConfig := tools.HTTPToolConfig{
-		Method: "POST",
-		URL: "https://api.tavily.com/search",
+		Method:  "POST",
+		URL:     "https://api.tavily.com/search",
 		Timeout: time.Duration(30) * time.Second,
 	}
 	TavilyToolConfig.Headers = map[string]string{
-		"Content-Type": "application/json",
+		"Content-Type":  "application/json",
 		"Authorization": "Bearer {{api_key}}",
 	}
 	TavilyToolConfig.BodyTemplate = "{\"query\":\"{{query}}\",\"search_depth\":\"{{search_depth}}\",\"max_results\":{{max_results}}}"
-	agent.TavilyTool = tools.NewHTTPTool("tavily", "调用 Tavily 搜索 API 执行联网检索", []tools.ToolParameter{{Name: "api_key", Type: tools.ParamTypeString, Required: true, Description: "Tavily API Key"},{Name: "query", Type: tools.ParamTypeString, Required: true, Description: "搜索查询词"},{Name: "search_depth", Type: tools.ParamTypeString, Required: false, Description: "搜索深度 basic 或 advanced", Default: "basic", Enum: []any{"basic", "advanced"}},{Name: "max_results", Type: tools.ParamTypeNumber, Required: false, Description: "最多返回结果数", Default: 5},}, TavilyToolConfig)
+	agent.TavilyTool = tools.NewHTTPTool("tavily", "调用 Tavily 搜索 API 执行联网检索", []tools.ToolParameter{{Name: "api_key", Type: tools.ParamTypeString, Required: true, Description: "Tavily API Key"}, {Name: "query", Type: tools.ParamTypeString, Required: true, Description: "搜索查询词"}, {Name: "search_depth", Type: tools.ParamTypeString, Required: false, Description: "搜索深度 basic 或 advanced", Default: "basic", Enum: []any{"basic", "advanced"}}, {Name: "max_results", Type: tools.ParamTypeNumber, Required: false, Description: "最多返回结果数", Default: 5}}, TavilyToolConfig)
 	JsonFileToolConfig := tools.MCPToolConfig{
 		ServerURL: "",
-		ToolName: "json_file",
+		ToolName:  "json_file",
 	}
-	agent.JsonFileTool = tools.NewMCPTool("json_file", "本地 JSON 文件 MCP 服务", []tools.ToolParameter{{Name: "action", Type: tools.ParamTypeString, Required: true, Description: "操作类型，read 或 write"},{Name: "path", Type: tools.ParamTypeString, Required: true, Description: "JSON 文件路径"},{Name: "json", Type: tools.ParamTypeObject, Required: false, Description: "写入时提供的 JSON 对象"},}, JsonFileToolConfig)
+	agent.JsonFileTool = tools.NewMCPTool("json_file", "本地 JSON 文件 MCP 服务", []tools.ToolParameter{{Name: "action", Type: tools.ParamTypeString, Required: true, Description: "操作类型，read 或 write"}, {Name: "path", Type: tools.ParamTypeString, Required: true, Description: "JSON 文件路径"}, {Name: "json", Type: tools.ParamTypeObject, Required: false, Description: "写入时提供的 JSON 对象"}}, JsonFileToolConfig)
 	BaziToolConfig := tools.MCPToolConfig{
 		ServerURL: "",
-		ToolName: "auto",
+		ToolName:  "auto",
 	}
-	agent.BaziTool = tools.NewMCPTool("bazi", "本地 Bazi MCP 服务，由 Agent 通过 tool_name 自动决定调用哪个八字子工具", []tools.ToolParameter{{Name: "tool_name", Type: tools.ParamTypeString, Required: true, Description: "要调用的 Bazi MCP 子工具名"},{Name: "arguments", Type: tools.ParamTypeObject, Required: false, Description: "Bazi MCP 子工具参数对象，优先使用该字段作为调用参数"},{Name: "query", Type: tools.ParamTypeString, Required: false, Description: "兼容字段；若未提供 arguments，则 query 等普通参数会被直接透传"},}, BaziToolConfig)
+	agent.BaziTool = tools.NewMCPTool("bazi", "本地 Bazi MCP 服务，由 Agent 通过 tool_name 自动决定调用哪个八字子工具", []tools.ToolParameter{{Name: "tool_name", Type: tools.ParamTypeString, Required: true, Description: "要调用的 Bazi MCP 子工具名"}, {Name: "arguments", Type: tools.ParamTypeObject, Required: false, Description: "Bazi MCP 子工具参数对象，优先使用该字段作为调用参数"}, {Name: "query", Type: tools.ParamTypeString, Required: false, Description: "兼容字段；若未提供 arguments，则 query 等普通参数会被直接透传"}}, BaziToolConfig)
 	FetchToolConfig := tools.MCPToolConfig{
 		ServerURL: "",
-		ToolName: "auto",
+		ToolName:  "auto",
 	}
-	agent.FetchTool = tools.NewMCPTool("fetch", "本地 Fetch MCP 服务，由 Agent 通过 tool_name 自动选择网页相关子工具", []tools.ToolParameter{{Name: "tool_name", Type: tools.ParamTypeString, Required: true, Description: "要调用的 Fetch MCP 子工具名"},{Name: "arguments", Type: tools.ParamTypeObject, Required: false, Description: "Fetch MCP 子工具参数对象，优先使用该字段"},{Name: "query", Type: tools.ParamTypeString, Required: false, Description: "兼容字段；若未提供 arguments，则 query 等参数会被透传"},}, FetchToolConfig)
+	agent.FetchTool = tools.NewMCPTool("fetch", "本地 Fetch MCP 服务，由 Agent 通过 tool_name 自动选择网页相关子工具", []tools.ToolParameter{{Name: "tool_name", Type: tools.ParamTypeString, Required: true, Description: "要调用的 Fetch MCP 子工具名"}, {Name: "arguments", Type: tools.ParamTypeObject, Required: false, Description: "Fetch MCP 子工具参数对象，优先使用该字段"}, {Name: "query", Type: tools.ParamTypeString, Required: false, Description: "兼容字段；若未提供 arguments，则 query 等参数会被透传"}}, FetchToolConfig)
 	AmapToolConfig := tools.MCPToolConfig{
 		ServerURL: "https://mcp.amap.com/sse?key=603b7b141042d9e7418bd3617c1758c2",
-		ToolName: "auto",
+		ToolName:  "auto",
 	}
-	agent.AmapTool = tools.NewMCPTool("amap", "AMap MCP 服务，由 Agent 通过 tool_name 自动选择地图子工具", []tools.ToolParameter{{Name: "tool_name", Type: tools.ParamTypeString, Required: true, Description: "要调用的 AMap MCP 子工具名"},{Name: "arguments", Type: tools.ParamTypeObject, Required: false, Description: "AMap MCP 子工具参数对象，优先使用该字段"},{Name: "query", Type: tools.ParamTypeString, Required: false, Description: "兼容字段；若未提供 arguments，则 query 等参数会被透传"},}, AmapToolConfig)
+	agent.AmapTool = tools.NewMCPTool("amap", "AMap MCP 服务，由 Agent 通过 tool_name 自动选择地图子工具", []tools.ToolParameter{{Name: "tool_name", Type: tools.ParamTypeString, Required: true, Description: "要调用的 AMap MCP 子工具名"}, {Name: "arguments", Type: tools.ParamTypeObject, Required: false, Description: "AMap MCP 子工具参数对象，优先使用该字段"}, {Name: "query", Type: tools.ParamTypeString, Required: false, Description: "兼容字段；若未提供 arguments，则 query 等参数会被透传"}}, AmapToolConfig)
 	MysqlExecToolConfig := tools.MCPToolConfig{
 		ServerURL: "",
-		ToolName: "mysql_exec",
+		ToolName:  "mysql_exec",
 	}
-	agent.MysqlExecTool = tools.NewMCPTool("mysql_exec", "本地 MySQL MCP 服务，用于执行 SQL", []tools.ToolParameter{{Name: "sql", Type: tools.ParamTypeString, Required: true, Description: "要执行的 SQL 语句"},}, MysqlExecToolConfig)
+	agent.MysqlExecTool = tools.NewMCPTool("mysql_exec", "本地 MySQL MCP 服务，用于执行 SQL", []tools.ToolParameter{{Name: "sql", Type: tools.ParamTypeString, Required: true, Description: "要执行的 SQL 语句"}}, MysqlExecToolConfig)
 	ScriptExecToolConfig := tools.MCPToolConfig{
 		ServerURL: "",
-		ToolName: "script_exec",
+		ToolName:  "script_exec",
 	}
-	agent.ScriptExecTool = tools.NewMCPTool("script_exec", "本地脚本执行 MCP 服务", []tools.ToolParameter{{Name: "path", Type: tools.ParamTypeString, Required: true, Description: "脚本路径"},{Name: "args", Type: tools.ParamTypeArray, Required: false, Description: "脚本执行参数"},{Name: "interpreter", Type: tools.ParamTypeString, Required: false, Description: "解释器，可选 powershell 或 python"},{Name: "cwd", Type: tools.ParamTypeString, Required: false, Description: "执行工作目录"},{Name: "timeout_sec", Type: tools.ParamTypeNumber, Required: false, Description: "超时时间，默认 60 秒"},}, ScriptExecToolConfig)
+	agent.ScriptExecTool = tools.NewMCPTool("script_exec", "本地脚本执行 MCP 服务", []tools.ToolParameter{{Name: "path", Type: tools.ParamTypeString, Required: true, Description: "脚本路径"}, {Name: "args", Type: tools.ParamTypeArray, Required: false, Description: "脚本执行参数"}, {Name: "interpreter", Type: tools.ParamTypeString, Required: false, Description: "解释器，可选 powershell 或 python"}, {Name: "cwd", Type: tools.ParamTypeString, Required: false, Description: "执行工作目录"}, {Name: "timeout_sec", Type: tools.ParamTypeNumber, Required: false, Description: "超时时间，默认 60 秒"}}, ScriptExecToolConfig)
 
 	engineCfg := orchestrator.Config{
 		DefaultTaskTimeoutSec: cfg.Orchestrator.DefaultTaskTimeoutSec,
@@ -218,13 +218,13 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	}
 
 	runID, err := a.orchestratorEngine.StartWorkflow(ctx, Test418WorkflowID, map[string]any{
-		"task_id": taskID,
-		"query":   query,
-		"text":    query,
-		"input":   query,
-		"user_id": userID,
+		"task_id":         taskID,
+		"query":           query,
+		"text":            query,
+		"input":           query,
+		"user_id":         userID,
 		"source_agent_id": "test 4.18",
-		"agent_id": "test 4.18",
+		"agent_id":        "test 4.18",
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start test 4.18 workflow: %w", err)
@@ -260,7 +260,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 	query, _ := req.Payload["query"].(string)
 	var (
 		response string
-		err error
+		err      error
 	)
 	switch req.NodeType {
 	case orchestrator.NodeTypeChatModel:
@@ -469,11 +469,11 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 	if strings.EqualFold(toolName, "tavily") {
 		q, _ := params["query"].(string)
 		rawQ := q
-		if i := strings.LastIndex(q, "=== 褰撳墠闂 ==="); i >= 0 {
-			q = strings.TrimSpace(q[i+len("=== 褰撳墠闂 ==="):])
+		if i := strings.LastIndex(q, "=== 当前问题 ==="); i >= 0 {
+			q = strings.TrimSpace(q[i+len("=== 当前问题 ==="):])
 		}
-		if i := strings.LastIndex(q, "鐢ㄦ埛:"); i >= 0 {
-			q = strings.TrimSpace(q[i+len("鐢ㄦ埛:"):])
+		if i := strings.LastIndex(q, "用户:"); i >= 0 {
+			q = strings.TrimSpace(q[i+len("用户:"):])
 		}
 		if q == "" {
 			q = strings.TrimSpace(rawQ)

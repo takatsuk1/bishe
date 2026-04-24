@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+// TestUpdateSharedOutputStateAndInputSelection 测试更新共享输出状态和输入选择
 func TestUpdateSharedOutputStateAndInputSelection(t *testing.T) {
 	shared := map[string]any{}
 
@@ -40,6 +41,7 @@ func TestUpdateSharedOutputStateAndInputSelection(t *testing.T) {
 	}
 }
 
+// TestResolveConditionOperandSupportsStringAndBoolOnly 测试条件操作数只支持字符串和布尔值
 func TestResolveConditionOperandSupportsStringAndBoolOnly(t *testing.T) {
 	shared := map[string]any{}
 	cfg := map[string]any{
@@ -55,6 +57,7 @@ func TestResolveConditionOperandSupportsStringAndBoolOnly(t *testing.T) {
 	}
 }
 
+// TestResolveConditionLeftOperandUsesLatestOutput 测试条件左操作数使用最新输出
 func TestResolveConditionLeftOperandUsesLatestOutput(t *testing.T) {
 	shared := map[string]any{
 		"latest_output": map[string]any{"response": true},
@@ -66,6 +69,7 @@ func TestResolveConditionLeftOperandUsesLatestOutput(t *testing.T) {
 	}
 }
 
+// TestSeedInputQueryHistory 测试种子输入查询历史
 func TestSeedInputQueryHistory(t *testing.T) {
 	shared := map[string]any{"query": "帮我搜索重庆邮电大学"}
 
@@ -92,6 +96,7 @@ func TestSeedInputQueryHistory(t *testing.T) {
 	}
 }
 
+// TestUpdateSharedOutputStateKeepsNonExtractableOutputInHistory 测试更新共享输出状态保留不可提取的输出到历史
 func TestUpdateSharedOutputStateKeepsNonExtractableOutputInHistory(t *testing.T) {
 	shared := map[string]any{}
 
@@ -114,6 +119,7 @@ func TestUpdateSharedOutputStateKeepsNonExtractableOutputInHistory(t *testing.T)
 	}
 }
 
+// TestStartNodeHandlerSeedsLatestOutputWithInitialQuery 测试开始节点处理器用初始查询种子最新输出
 func TestStartNodeHandlerSeedsLatestOutputWithInitialQuery(t *testing.T) {
 	e := &engine{}
 	run := &workflowRun{}
