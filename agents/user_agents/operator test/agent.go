@@ -472,11 +472,11 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 	if strings.EqualFold(toolName, "tavily") {
 		q, _ := params["query"].(string)
 		rawQ := q
-		if i := strings.LastIndex(q, "=== 褰撳墠闂 ==="); i >= 0 {
-			q = strings.TrimSpace(q[i+len("=== 褰撳墠闂 ==="):])
+		if i := strings.LastIndex(q, "=== 当前问题 ==="); i >= 0 {
+			q = strings.TrimSpace(q[i+len("=== 当前问题 ==="):])
 		}
-		if i := strings.LastIndex(q, "鐢ㄦ埛:"); i >= 0 {
-			q = strings.TrimSpace(q[i+len("鐢ㄦ埛:"):])
+		if i := strings.LastIndex(q, "用户:"); i >= 0 {
+			q = strings.TrimSpace(q[i+len("用户:"):])
 		}
 		if q == "" {
 			q = strings.TrimSpace(rawQ)

@@ -309,21 +309,6 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 	}
 }
 
-func (a *Agent) findToolByName(name string) (tools.Tool, error) {
-	switch strings.TrimSpace(name) {
-	case "bazi":
-		if client, ok := tools.GetStdioMCPManager().Get(tools.BaziMCPToolID); ok {
-			return tools.WrapBaziStdioMCPClient(client), nil
-		}
-		if a.BaziTool == nil {
-			return nil, fmt.Errorf("tool bazi is not initialized")
-		}
-		return a.BaziTool, nil
-	default:
-		return nil, fmt.Errorf("tool %s not found", name)
-	}
-}
-
 func buildBaziHelperWorkflow() (*orchestrator.Workflow, error) {
 	wf, err := orchestrator.NewWorkflow(BaziHelperWorkflowID, "bazihelper workflow")
 	if err != nil {

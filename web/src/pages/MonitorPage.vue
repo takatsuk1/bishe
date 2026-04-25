@@ -206,6 +206,7 @@ const nodeRuntimeMap = computed<Record<string, NodeRuntimeInfo>>(() => {
   const workflowNodeByCanonical: Record<string, string> = {}
   const workflowId = (currentRunDetail.value?.run.workflowId || '').trim().toLowerCase()
   const canonicalAliasMap: Record<string, string> = {}
+  const runtimeNodeAliasMap: Record<string, string> = {}
 
   if (workflowId === 'host-default' || workflowId === 'host') {
     canonicalAliasMap.route = 'chat_model'
@@ -223,6 +224,9 @@ const nodeRuntimeMap = computed<Record<string, NodeRuntimeInfo>>(() => {
     const trimmed = (rawNodeId || '').trim()
     if (!trimmed) {
       return ''
+    }
+    if (runtimeNodeAliasMap[trimmed]) {
+      return runtimeNodeAliasMap[trimmed]
     }
     if (map[trimmed]) {
       return trimmed
@@ -260,11 +264,86 @@ const nodeRuntimeMap = computed<Record<string, NodeRuntimeInfo>>(() => {
     }
   }
 
-  const failedNodes = new Set<string>()
-  const timeoutNodes = new Set<string>()
-  const retryingNodes = new Set<string>()
-  const succeededNodes = new Set<string>()
-  const runningNodes = new Set<string>()
+  if (currentWorkflowDef.value) {
+    const runtimeEventsByRawNodeId = new Map<string, MonitorEvent[]>()
+    const runtimeFirstSeenIndex = new Map<string, number>()
+
+    currentRunEvents.value.forEach((event, index) => {
+      const rawNodeId = (event.nodeId || '').trim()
+      if (!rawNodeId) {
+        return
+      }
+      const bucket = runtimeEventsByRawNodeId.get(rawNodeId) ?? []
+      bucket.push(event)
+      runtimeEventsByRawNodeId.set(rawNodeId, bucket)
+      if (!runtimeFirstSeenIndex.has(rawNodeId)) {
+        runtimeFirstSeenIndex.set(rawNodeId, index)
+      }
+    })
+
+    const inferRuntimeNodeType = (rawNodeId: string, events: MonitorEvent[]): NodeDefinition['type'] | '' => {
+      const canonical = canonicalNodeId(rawNodeId)
+      if (canonical === 'start') {
+        return 'start'
+      }
+      if (canonical === 'end') {
+        return 'end'
+      }
+      if (canonical.includes('condition') || canonical === 'judge') {
+        return 'condition'
+      }
+      if (canonical.includes('loop')) {
+        return 'loop'
+      }
+      if (events.some((event) => event.eventType === 'model_called')) {
+        return 'chat_model'
+      }
+      if (events.some((event) => event.eventType === 'tool_called' || event.eventType === 'agent_called')) {
+        return 'tool'
+      }
+      return ''
+    }
+
+    const usedUiNodeIds = new Set<string>()
+    for (const rawNodeId of runtimeEventsByRawNodeId.keys()) {
+      const canonical = canonicalNodeId(rawNodeId)
+      const matched =
+        workflowNodeByCanonical[canonicalAliasMap[canonical] ?? ''] ||
+        workflowNodeByCanonical[canonical]
+      if (matched) {
+        usedUiNodeIds.add(matched)
+      }
+    }
+
+    const uiCandidatesByType = new Map<NodeDefinition['type'], string[]>()
+    currentWorkflowDef.value.nodes.forEach((node) => {
+      if (usedUiNodeIds.has(node.id)) {
+        return
+      }
+      const bucket = uiCandidatesByType.get(node.type) ?? []
+      bucket.push(node.id)
+      uiCandidatesByType.set(node.type, bucket)
+    })
+
+    Array.from(runtimeEventsByRawNodeId.entries())
+      .filter(([rawNodeId]) => {
+        const canonical = canonicalNodeId(rawNodeId)
+        return !workflowNodeByCanonical[canonicalAliasMap[canonical] ?? ''] && !workflowNodeByCanonical[canonical]
+      })
+      .sort((a, b) => (runtimeFirstSeenIndex.get(a[0]) ?? 0) - (runtimeFirstSeenIndex.get(b[0]) ?? 0))
+      .forEach(([rawNodeId, events]) => {
+        const inferredType = inferRuntimeNodeType(rawNodeId, events)
+        if (!inferredType) {
+          return
+        }
+        const candidates = uiCandidatesByType.get(inferredType) ?? []
+        const nextUiNodeId = candidates.shift()
+        if (!nextUiNodeId) {
+          return
+        }
+        runtimeNodeAliasMap[rawNodeId] = nextUiNodeId
+      })
+  }
 
   for (const event of currentRunEvents.value) {
     const nodeId = resolveNodeId(event.nodeId ?? '')
@@ -303,54 +382,29 @@ const nodeRuntimeMap = computed<Record<string, NodeRuntimeInfo>>(() => {
 
     if (event.eventType === 'node_started') {
       item.startedAt = event.createdAt
-      runningNodes.add(nodeId)
+      item.runtimeStatus = 'running'
       continue
     }
     if (event.eventType === 'node_finished') {
       item.endedAt = event.createdAt
-      succeededNodes.add(nodeId)
-      runningNodes.delete(nodeId)
+      item.runtimeStatus = 'succeeded'
       continue
     }
     if (event.eventType === 'node_failed') {
       item.endedAt = event.createdAt
-      failedNodes.add(nodeId)
-      runningNodes.delete(nodeId)
+      item.runtimeStatus = 'failed'
       continue
     }
     if (event.eventType === 'timeout_triggered' || event.status === 'timeout') {
-      timeoutNodes.add(nodeId)
-      runningNodes.delete(nodeId)
+      item.endedAt = event.createdAt
+      item.runtimeStatus = 'timeout'
       continue
     }
     if (event.eventType === 'retry_triggered' || event.status === 'retrying') {
-      retryingNodes.add(nodeId)
-      runningNodes.add(nodeId)
+      item.runtimeStatus = 'retrying'
+      continue
     }
   }
-
-  // Runtime status precedence: failed > timeout > retrying > succeeded > running > pending/skipped.
-  Object.keys(map).forEach((nodeId) => {
-    if (failedNodes.has(nodeId)) {
-      map[nodeId].runtimeStatus = 'failed'
-      return
-    }
-    if (timeoutNodes.has(nodeId)) {
-      map[nodeId].runtimeStatus = 'timeout'
-      return
-    }
-    if (retryingNodes.has(nodeId)) {
-      map[nodeId].runtimeStatus = 'retrying'
-      return
-    }
-    if (succeededNodes.has(nodeId)) {
-      map[nodeId].runtimeStatus = 'succeeded'
-      return
-    }
-    if (runningNodes.has(nodeId)) {
-      map[nodeId].runtimeStatus = 'running'
-    }
-  })
 
   const currentNodeId = resolveNodeId(currentRunDetail.value?.run.currentNodeId ?? '')
   const runStatus = (currentRunDetail.value?.run.status || '').trim()
@@ -374,6 +428,20 @@ const nodeRuntimeMap = computed<Record<string, NodeRuntimeInfo>>(() => {
     Object.values(map).forEach((item) => {
       if (item.runtimeStatus === 'pending') {
         item.runtimeStatus = 'skipped'
+        return
+      }
+      if (runStatus === 'succeeded' && (item.runtimeStatus === 'running' || item.runtimeStatus === 'retrying')) {
+        item.runtimeStatus = 'succeeded'
+        if (!item.endedAt) {
+          item.endedAt = currentRunDetail.value?.run.finishedAt ?? item.lastEventTime
+        }
+        return
+      }
+      if ((runStatus === 'failed' || runStatus === 'canceled') && (item.runtimeStatus === 'running' || item.runtimeStatus === 'retrying')) {
+        item.runtimeStatus = 'failed'
+        if (!item.endedAt) {
+          item.endedAt = currentRunDetail.value?.run.finishedAt ?? item.lastEventTime
+        }
       }
     })
   }

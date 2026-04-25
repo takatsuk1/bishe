@@ -564,57 +564,6 @@ func (a *Agent) emitSemanticStep(ctx context.Context, taskID string, name string
 	})
 }
 
-func (a *Agent) emitSearchKeywordStep(ctx context.Context, taskID string, round int, keyword string) {
-	manager := taskManagerFromContext(ctx)
-	if manager == nil {
-		return
-	}
-	keyword = strings.TrimSpace(keyword)
-	if keyword == "" {
-		return
-	}
-	message := "检索关键词：" + keyword
-	if round > 0 {
-		message = fmt.Sprintf("第%d轮检索关键词：%s", round, keyword)
-	}
-	ev := internalproto.NewStepEvent("deepresearch", "search", "deepresearch.search.keyword", internalproto.StepStateInfo, message)
-	ev.Round = round
-	ev.Keyword = keyword
-	token, err := internalproto.EncodeStepToken(ev)
-	if err != nil {
-		return
-	}
-	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
-		Role:  internalproto.MessageRoleAgent,
-		Parts: []internalproto.Part{internalproto.NewTextPart(token)},
-	})
-}
-
-func (a *Agent) emitLLMStreamingProgress(ctx context.Context, taskID string, chars int) {
-	manager := taskManagerFromContext(ctx)
-	if manager == nil {
-		return
-	}
-	if chars <= 0 {
-		return
-	}
-	ev := internalproto.NewStepEvent(
-		"deepresearch",
-		"llm",
-		"deepresearch.llm.streaming",
-		internalproto.StepStateInfo,
-		fmt.Sprintf("大模型生成中，已接收约 %d 字符...", chars),
-	)
-	token, err := internalproto.EncodeStepToken(ev)
-	if err != nil {
-		return
-	}
-	_ = manager.UpdateTaskState(ctx, taskID, internalproto.TaskStateWorking, &internalproto.Message{
-		Role:  internalproto.MessageRoleAgent,
-		Parts: []internalproto.Part{internalproto.NewTextPart(token)},
-	})
-}
-
 func toTerminalStepState(state orchestrator.TaskState) (internalproto.StepState, bool) {
 	switch state {
 	case orchestrator.TaskStateSucceeded:

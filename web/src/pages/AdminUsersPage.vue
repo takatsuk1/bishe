@@ -1,4 +1,4 @@
-<!-- <script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { listAdminUsers, updateAdminUserRoles, updateAdminUserStatus, type AdminUserItem } from '../lib/adminApi'
 import { currentPrimaryRole } from '../lib/permission'
@@ -211,4 +211,4 @@ onMounted(() => {
   border-radius: 8px;
   background: #fff;
 }
-</style> -->
+</style>
