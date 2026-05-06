@@ -1,4 +1,6 @@
 @startuml
+skinparam defaultFontSize 30
+skinparam titleFontSize 30
 title 角色权限控制活动图
 
 |系统管理员|

@@ -1,4 +1,6 @@
 @startuml
+skinparam defaultFontSize 30
+skinparam titleFontSize 30
 title 聊天请求处理时序图（基于主控智能体路由）
 
 actor 用户 as User

@@ -1,4 +1,6 @@
 @startuml
+skinparam defaultFontSize 30
+skinparam titleFontSize 30
 title 测试/发布智能体活动图
 
 |用户|

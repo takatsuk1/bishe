@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
 
 type API struct {
@@ -21,14 +23,14 @@ func NewAPI(service *monitor.Service) *API {
 }
 
 func (a *API) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/monitor/", a.handleRoot)
-	mux.HandleFunc("/v1/monitor/overview", a.handleOverview)
-	mux.HandleFunc("/v1/monitor/runs", a.handleRuns)
-	mux.HandleFunc("/v1/monitor/runs/", a.handleRunChildren)
-	mux.HandleFunc("/v1/monitor/alerts", a.handleAlerts)
-	mux.HandleFunc("/v1/monitor/alerts/", a.handleAlertAction)
-	return mux
+	router := gin.New()
+	router.Any("/v1/monitor/", gin.WrapF(a.handleRoot))
+	router.Any("/v1/monitor/overview", gin.WrapF(a.handleOverview))
+	router.Any("/v1/monitor/runs", gin.WrapF(a.handleRuns))
+	router.Any("/v1/monitor/runs/*path", gin.WrapF(a.handleRunChildren))
+	router.Any("/v1/monitor/alerts", gin.WrapF(a.handleAlerts))
+	router.Any("/v1/monitor/alerts/*path", gin.WrapF(a.handleAlertAction))
+	return router
 }
 
 func (a *API) handleRoot(w http.ResponseWriter, r *http.Request) {

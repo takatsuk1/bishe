@@ -28,6 +28,7 @@ export interface Conversation {
   id: string
   title: string
   model: AgentModel
+  jobDescription?: string
   createdAt: string
   updatedAt: string
   taskId?: string

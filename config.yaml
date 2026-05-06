@@ -9,10 +9,10 @@ dashscope:
 llm:
   url: https://dashscope.aliyuncs.com/compatible-mode/v1/
   apikey: sk-5796edd8954b4227971d376c9007a699
-  reasoning_model: qwen3.5-plus
-  chat_model: qwen3.5-plus
-  intent_model: qwen3.5-plus # 意图识别模型
-  video_model: qwen3.5-plus # 视频分析模型
+  reasoning_model: qwen3.5-27b
+  chat_model: qwen3.5-27b
+  intent_model: qwen3.5-27b # 意图识别模型
+  video_model: qwen3.5-27b # 视频分析模型
   index_model: text-embedding-v4 #向量模型
 langfuse:
   name: go-manus
@@ -40,8 +40,8 @@ host_agent:
       server_url: http://127.0.0.1:9996
     - name: interviewsimulator
       server_url: http://127.0.0.1:9998
-    - name: careerradar
-      server_url: http://127.0.0.1:9997
+    # - name: careerradar
+    #   server_url: http://127.0.0.1:9997
     # - name: knowledgeChat
     #   server_url: http://127.0.0.1:9995
 openai_connector:
@@ -60,8 +60,8 @@ openai_connector:
       server_url: http://127.0.0.1:9996
     - name: interviewsimulator
       server_url: http://127.0.0.1:9998
-    - name: careerradar
-      server_url: http://127.0.0.1:9997
+    # - name: careerradar
+    #   server_url: http://127.0.0.1:9997
     - name: host
       server_url: http://localhost:8080
     # - name: knowledgeChat

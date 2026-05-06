@@ -87,6 +87,66 @@ func encodeStateToken(st *InterviewState) string {
 	return "<!--INTERVIEW_STATE:" + base64.StdEncoding.EncodeToString(b) + "-->"
 }
 func stripStateToken(s string) string { return strings.TrimSpace(stateTokenRe.ReplaceAllString(s, "")) }
+
+func extractJobDescription(query string) string {
+	return extractBracketBlock(stripStateToken(query), "[job_description]")
+}
+
+func extractBracketBlock(text, tag string) string {
+	idx := strings.LastIndex(strings.ToLower(text), strings.ToLower(tag))
+	if idx < 0 {
+		return ""
+	}
+	body := text[idx+len(tag):]
+	next := len(body)
+	for _, marker := range []string{"\n[upload]", "\n[content]", "\n[warning]", "\n[user]", "\n[assistant]"} {
+		if i := strings.Index(strings.ToLower(body), marker); i >= 0 && i < next {
+			next = i
+		}
+	}
+	return strings.TrimSpace(body[:next])
+}
+
+func removeBracketBlock(text, tag string) string {
+	lower := strings.ToLower(text)
+	idx := strings.LastIndex(lower, strings.ToLower(tag))
+	if idx < 0 {
+		return text
+	}
+	body := text[idx+len(tag):]
+	next := len(body)
+	for _, marker := range []string{"\n[upload]", "\n[content]", "\n[warning]", "\n[user]", "\n[assistant]"} {
+		if i := strings.Index(strings.ToLower(body), marker); i >= 0 && i < next {
+			next = i
+		}
+	}
+	return strings.TrimSpace(text[:idx] + body[next:])
+}
+
+func ensureProfileIncludesJD(st *InterviewState) string {
+	profile := strings.TrimSpace(st.ProfileSummary)
+	jd := strings.TrimSpace(st.JobDescription)
+	if jd == "" {
+		return profile
+	}
+	if strings.Contains(profile, jd) {
+		return profile
+	}
+	return strings.TrimSpace("目标岗位JD：\n" + jd + "\n\n候选人画像：\n" + profile)
+}
+
+func buildPlanPrompt(st *InterviewState) string {
+	return fmt.Sprintf("你是资深面试官。请严格基于目标岗位JD和候选人简历画像，生成%d道由浅入深的主问题。问题必须覆盖JD中的职责、必备技能、项目经验和风险点，并结合简历经历追问匹配度。只输出JSON数组，每项字段为question/focus/difficulty。\n\n目标岗位JD：\n%s\n\n候选人画像与简历摘要：\n%s", st.MaxRounds, strings.TrimSpace(st.JobDescription), strings.TrimSpace(st.ProfileSummary))
+}
+
+func buildScorePrompt(st *InterviewState, ans string) string {
+	return "你是面试评分官。请根据目标岗位JD、原问题和候选人回答评分，只输出JSON对象(total/correctness/depth/expression/structure/risk/highlights/weaknesses)。\n\n目标岗位JD：\n" + strings.TrimSpace(st.JobDescription) + "\n\n问题：\n" + st.LastQuestion + "\n\n回答：\n" + ans
+}
+
+func buildFollowupPrompt(st *InterviewState, sc InterviewScore, strategy string) string {
+	return "你是面试官。请结合目标岗位JD、候选人上一题回答评分和策略，生成1条贴近岗位要求的追问，只输出追问句。\n\n目标岗位JD：\n" + strings.TrimSpace(st.JobDescription) + "\n\n策略：" + strategy + "\n原问题：" + st.LastQuestion + "\n评分：" + scoreSummary(sc)
+}
+
 func parsePlan(raw string, rounds int) []InterviewQuestion {
 	js := extractJSON(raw, '[', ']')
 	if js == "" {
@@ -190,6 +250,7 @@ func getNodeField(payload map[string]any, node, field string) any {
 }
 func extractCurrentUserInput(query string) string {
 	raw := stripStateToken(query)
+	raw = removeBracketBlock(raw, "[job_description]")
 	if i := strings.LastIndex(raw, "=== 当前问题 ==="); i >= 0 {
 		raw = raw[i+len("=== 当前问题 ==="):]
 	}

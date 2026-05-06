@@ -6,16 +6,12 @@ left to right direction
 entity "users" as Users {
   id
   user_id
-  username
-  display_name
   status
 }
 
 entity "role" as Role {
   id
   role_code
-  role_name
-  status
 }
 
 entity "user_tool" as UserTool {
@@ -23,10 +19,7 @@ entity "user_tool" as UserTool {
   tool_id
   user_id
   name
-  tool_type
   config
-  parameters
-  output_parameters
 }
 
 entity "user_workflow" as UserWorkflow {
@@ -34,7 +27,6 @@ entity "user_workflow" as UserWorkflow {
   workflow_id
   user_id
   name
-  start_node_id
   status
 }
 
@@ -44,10 +36,6 @@ entity "user_agent" as UserAgent {
   user_id
   workflow_id
   name
-  status
-  port
-  process_pid
-  code_path
 }
 
 entity "monitor_run" as MonitorRun {
@@ -58,38 +46,21 @@ entity "monitor_run" as MonitorRun {
   source_agent_id
   task_id
   status
-  duration_ms
-  current_node_id
-  error_message
-  alert_count
 }
 
 entity "monitor_event" as MonitorEvent {
   id
   event_id
   run_id
-  task_id
-  workflow_id
-  user_id
-  agent_id
-  node_id
   event_type
-  status
-  message
-  error_message
-  duration_ms
 }
 
 entity "monitor_alert" as MonitorAlert {
   id
   alert_id
   run_id
-  workflow_id
-  agent_id
-  node_id
   alert_type
   content
-  status
 }
 
 relationship "分配" as AssignRole {

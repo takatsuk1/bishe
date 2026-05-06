@@ -1,4 +1,7 @@
 @startuml
+
+skinparam defaultFontSize 30
+skinparam titleFontSize 30
 title 聊天功能活动图
 
 |用户|

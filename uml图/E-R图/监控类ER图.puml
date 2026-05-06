@@ -17,10 +17,6 @@ entity "monitor_run" as MonitorRun {
   source_agent_id
   task_id
   status
-  duration_ms
-  current_node_id
-  error_message
-  alert_count
 }
 
 entity "monitor_event" as MonitorEvent {
@@ -29,14 +25,8 @@ entity "monitor_event" as MonitorEvent {
   run_id
   task_id
   workflow_id
-  user_id
-  agent_id
-  node_id
   event_type
-  status
   message
-  error_message
-  duration_ms
 }
 
 entity "monitor_alert" as MonitorAlert {
@@ -44,11 +34,8 @@ entity "monitor_alert" as MonitorAlert {
   alert_id
   run_id
   workflow_id
-  agent_id
-  node_id
   alert_type
   content
-  status
 }
 
 relationship "产生运行" as HasRun {

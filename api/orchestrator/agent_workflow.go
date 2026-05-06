@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -185,10 +187,10 @@ const (
 )
 
 func (api *AgentWorkflowAPI) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/agent-workflows", api.handleAgentWorkflows)
-	mux.HandleFunc("/v1/agent-workflows/", api.handleAgentWorkflowByID)
-	return mux
+	router := gin.New()
+	router.Any("/v1/agent-workflows", gin.WrapF(api.handleAgentWorkflows))
+	router.Any("/v1/agent-workflows/:agentID", gin.WrapF(api.handleAgentWorkflowByID))
+	return router
 }
 
 func (api *AgentWorkflowAPI) handleAgentWorkflows(w http.ResponseWriter, r *http.Request) {
@@ -461,7 +463,6 @@ func InitAgentWorkflows() error {
 		{"bazihelper", "八字助手", "八字助手，调用 Bazi MCP 工具生成命盘并输出结构化解读", buildBaziHelperWorkflowDef},
 		{"resumecustomizer", "简历优化助手", "简历优化助手，结合目标岗位与上传简历生成定制版简历", buildResumeCustomizerWorkflowDef},
 		{"interviewsimulator", "面试模拟助手", "面试模拟助手，基于上传简历生成结构化模拟面试内容", buildInterviewSimulatorWorkflowDef},
-		{"careerradar", "职场雷达助手", "职场雷达助手，调用 deepresearch 推荐匹配岗位并识别高风险岗位描述", buildCareerRadarWorkflowDef},
 	}
 
 	for _, aw := range agentWorkflows {
@@ -537,7 +538,6 @@ func buildHostAgentWorkflow() AgentWorkflowDetail {
 			{AgentID: "bazihelper", Type: "downstream", Required: false, Description: "八字助手 Agent"},
 			{AgentID: "resumecustomizer", Type: "downstream", Required: false, Description: "简历定制 Agent"},
 			{AgentID: "interviewsimulator", Type: "downstream", Required: false, Description: "面试模拟 Agent"},
-			{AgentID: "careerradar", Type: "downstream", Required: false, Description: "职场雷达 Agent"},
 		},
 		ExecutionOrder: ExecutionOrder{
 			StartNodeID: "start",
@@ -549,7 +549,7 @@ func buildHostAgentWorkflow() AgentWorkflowDetail {
 			{ID: "agent_info", Type: "tool", Config: map[string]interface{}{"tool_name": "agent_info"}, Metadata: map[string]string{"ui.label": "获取可调用 Agent", "ui.x": "300", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "chat_model", Type: "chat_model", PreInput: "你是路由决策器。可调用 agent 列表如下：\n{{agent_info.response}}\n若无需调用下游 agent，只输出 false；若需要调用，只输出 agent 名称本身。用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "路由决策", "ui.x": "520", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "condition", Type: "condition", Config: map[string]interface{}{"left_type": "path", "left_value": "chat_model.response", "operator": "eq", "right_type": "const", "right_value": "false"}, Metadata: map[string]string{"ui.label": "是否直接回答", "ui.x": "700", "ui.y": "120", "ui.agent": "host"}},
-			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "bazihelper", "resumecustomizer", "interviewsimulator", "careerradar"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
+			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "bazihelper", "resumecustomizer", "interviewsimulator"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
 			{ID: "direct_answer", Type: "chat_model", PreInput: "请基于可调用 agent 列表直接回答用户问题。可调用 agent 列表：\n{{agent_info.response}}\n用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "直接回答", "ui.x": "760", "ui.y": "180", "ui.agent": "host"}},
 			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "980", "ui.y": "120"}},
 		},
@@ -800,7 +800,7 @@ func buildHostWorkflowDef() storage.WorkflowDefinition {
 			{ID: "agent_info", Type: "tool", Config: map[string]interface{}{"tool_name": "agent_info"}, Metadata: map[string]string{"ui.label": "获取可调用 Agent", "ui.x": "300", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "chat_model", Type: "chat_model", PreInput: "你是路由决策器。可调用 agent 列表如下：\n{{agent_info.response}}\n若无需调用下游 agent，只输出 false；若需要调用，只输出 agent 名称本身。用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "路由决策", "ui.x": "520", "ui.y": "120", "ui.agent": "host"}},
 			{ID: "condition", Type: "condition", Config: map[string]interface{}{"left_type": "path", "left_value": "chat_model.response", "operator": "eq", "right_type": "const", "right_value": "false"}, Metadata: map[string]string{"ui.label": "是否直接回答", "ui.x": "700", "ui.y": "120", "ui.agent": "host"}},
-			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "bazihelper", "resumecustomizer", "interviewsimulator", "careerradar"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
+			{ID: "call_agent", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "input_mapping": map[string]interface{}{"agent_name": "chat_model.response", "text": "text", "task_id": "task_id", "user_id": "user_id"}, "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch", "urlreader", "lbshelper", "schedulehelper", "financehelper", "bazihelper", "resumecustomizer", "interviewsimulator"}}}, Metadata: map[string]string{"ui.label": "调用下游 Agent", "ui.x": "760", "ui.y": "60", "ui.agent": "host"}},
 			{ID: "direct_answer", Type: "chat_model", PreInput: "请基于可调用 agent 列表直接回答用户问题。可调用 agent 列表：\n{{agent_info.response}}\n用户问题: {{text}}", Config: map[string]interface{}{"output_type": "string"}, Metadata: map[string]string{"ui.label": "直接回答", "ui.x": "760", "ui.y": "180", "ui.agent": "host"}},
 			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "980", "ui.y": "120"}},
 		},
@@ -972,25 +972,6 @@ func buildInterviewSimulatorWorkflowDef() storage.WorkflowDefinition {
 			{From: "score", To: "followup"},
 			{From: "followup", To: "question"},
 			{From: "question", To: "end"},
-		},
-	}
-}
-
-func buildCareerRadarWorkflowDef() storage.WorkflowDefinition {
-	return storage.WorkflowDefinition{
-		StartNodeID: "start",
-		Nodes: []storage.NodeDef{
-			{ID: "start", Type: "start", Metadata: map[string]string{"ui.label": "开始", "ui.x": "120", "ui.y": "120"}},
-			{ID: "plan", Type: "chat_model", PreInput: "根据用户岗位意向生成 deepresearch 的检索任务。", Config: map[string]interface{}{"intent": "plan_research"}, Metadata: map[string]string{"ui.label": "检索任务规划", "ui.x": "320", "ui.y": "120", "ui.agent": "careerradar"}},
-			{ID: "research", Type: "tool", Config: map[string]interface{}{"tool_name": "call_agent", "params": map[string]interface{}{"allowed_agents": []interface{}{"deepresearch"}}}, Metadata: map[string]string{"ui.label": "调用DeepResearch", "ui.x": "560", "ui.y": "120", "ui.agent": "careerradar"}},
-			{ID: "analyze", Type: "chat_model", PreInput: "基于检索结果输出匹配岗位推荐，并识别高风险岗位描述（加班文化、薪资模糊等）。", Config: map[string]interface{}{"intent": "summarize_jobs"}, Metadata: map[string]string{"ui.label": "岗位匹配与风险识别", "ui.x": "820", "ui.y": "120", "ui.agent": "careerradar"}},
-			{ID: "end", Type: "end", Metadata: map[string]string{"ui.label": "结束", "ui.x": "1060", "ui.y": "120"}},
-		},
-		Edges: []storage.EdgeDef{
-			{From: "start", To: "plan"},
-			{From: "plan", To: "research"},
-			{From: "research", To: "analyze"},
-			{From: "analyze", To: "end"},
 		},
 	}
 }

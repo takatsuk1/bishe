@@ -1,4 +1,6 @@
 @startuml
+skinparam defaultFontSize 30
+skinparam titleFontSize 30
 title 查看运行监控活动图
 
 |运维人员/系统管理员|

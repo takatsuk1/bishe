@@ -96,13 +96,8 @@ var (
 			} else {
 				startServer(serverConfig{name: "interviewsimulator", addr: addr, handler: h})
 			}
-			if h, addr, err := buildCareerRadarHTTPServer(); err != nil {
-				logger.Fatal(err)
-			} else {
-				startServer(serverConfig{name: "careerradar", addr: addr, handler: h})
-			}
 
-			for _, name := range []string{"deepresearch", "lbshelper", "urlreader", "financehelper", "bazihelper", "resumecustomizer", "interviewsimulator", "careerradar"} {
+			for _, name := range []string{"deepresearch", "lbshelper", "urlreader", "financehelper", "bazihelper", "resumecustomizer", "interviewsimulator"} {
 				serverURL := getAgentServerURLByName(cfg.HostAgent.Agents, name)
 				if serverURL == "" {
 					logger.Fatalf("host_agent.agents missing server_url for %s", name)
@@ -172,7 +167,6 @@ func startConfiguredUserAgents(cfg *config.MainConfig, projectRoot string) error
 		"bazihelper":         true,
 		"resumecustomizer":   true,
 		"interviewsimulator": true,
-		"careerradar":        true,
 		"host":               true,
 	}
 	usedConfiguredPorts := map[int]string{}
@@ -185,8 +179,17 @@ func startConfiguredUserAgents(cfg *config.MainConfig, projectRoot string) error
 			return nil
 		}
 
-		cmd := exec.Command("go", "run", "./cmd", "--port", strconv.Itoa(port), "--main-config", mainConfigPath)
-		cmd.Dir = agentDir
+		exePath := filepath.Join(agentDir, "agent.exe")
+		var cmd *exec.Cmd
+		if _, err := os.Stat(exePath); err == nil {
+			logger.Infof("auto-start user agent %s using binary %s", agentName, exePath)
+			cmd = exec.Command(exePath, "--port", strconv.Itoa(port), "--main-config", mainConfigPath)
+			cmd.Dir = agentDir
+		} else {
+			logger.Infof("auto-start user agent %s using go run in %s", agentName, agentDir)
+			cmd = exec.Command("go", "run", "./cmd", "--port", strconv.Itoa(port), "--main-config", mainConfigPath)
+			cmd.Dir = agentDir
+		}
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Start(); err != nil {

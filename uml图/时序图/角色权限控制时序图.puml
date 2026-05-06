@@ -1,4 +1,6 @@
 @startuml
+skinparam defaultFontSize 30
+skinparam titleFontSize 30
 title 角色权限控制时序图
 
 actor "系统管理员" as Admin

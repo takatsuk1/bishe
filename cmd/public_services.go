@@ -12,11 +12,14 @@ import (
 	"ai/pkg/storage"
 	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // buildPublicServicesHandler wires non-agent shared APIs (orchestrator, auth).
 func buildPublicServicesHandler(mysqlStorage *storage.MySQLStorage) http.Handler {
-	mux := http.NewServeMux()
+	router := gin.New()
+	router.Use(ginCORS())
 
 	orchestratorAPI := orchestrator.NewOrchestratorAPI()
 	var monitorAPI *monitorapi.API
@@ -35,49 +38,49 @@ func buildPublicServicesHandler(mysqlStorage *storage.MySQLStorage) http.Handler
 			logger.Warnf("init auth service failed: %v", err)
 		} else {
 			authMiddleware = auth.Middleware(authService)
-			authMux := http.NewServeMux()
-			authapi.NewAPI(authService).RegisterRoutes(authMux)
-			mux.Handle("/v1/auth/", withCORS(authMux))
+			authapi.NewAPI(authService).RegisterRoutes(router)
 		}
 	}
 
 	orchHandler := orchestratorAPI.Handler()
-	mux.Handle("/v1/orchestrator/", withCORS(orchHandler))
+	if authMiddleware != nil {
+		orchHandler = authMiddleware(orchHandler)
+	}
+	router.Any("/v1/orchestrator", gin.WrapH(orchHandler))
+	router.Any("/v1/orchestrator/*path", gin.WrapH(orchHandler))
+
 	if monitorAPI != nil {
 		monitorHandler := monitorAPI.Handler()
-		mux.Handle("/v1/monitor/", withCORS(monitorHandler))
-	}
-	if authMiddleware != nil {
-		protected := withCORS(authMiddleware(orchHandler))
-		adminMux := http.NewServeMux()
-		adminapi.NewAPI(mysqlStorage).RegisterRoutes(adminMux)
-		adminProtected := withCORS(authMiddleware(adminMux))
-		mux.Handle("/v1/admin/users", adminProtected)
-		mux.Handle("/v1/admin/users/", adminProtected)
-		mux.Handle("/v1/orchestrator/agents", protected)
-		mux.Handle("/v1/orchestrator/agent-workflows", protected)
-		mux.Handle("/v1/orchestrator/agent-workflows/", protected)
-		mux.Handle("/v1/orchestrator/tools", protected)
-		mux.Handle("/v1/orchestrator/workflows", protected)
-		mux.Handle("/v1/orchestrator/workflows/", protected)
-		mux.Handle("/v1/orchestrator/runs/", protected)
-		mux.Handle("/v1/orchestrator/user-workflows", protected)
-		mux.Handle("/v1/orchestrator/user-workflows/", protected)
-		mux.Handle("/v1/orchestrator/user-tools", protected)
-		mux.Handle("/v1/orchestrator/user-tools/", protected)
-		mux.Handle("/v1/orchestrator/user-agents", protected)
-		mux.Handle("/v1/orchestrator/user-agents/", protected)
-		if monitorAPI != nil {
-			monitorProtected := withCORS(authMiddleware(monitorAPI.Handler()))
-			mux.Handle("/v1/monitor/overview", monitorProtected)
-			mux.Handle("/v1/monitor/runs", monitorProtected)
-			mux.Handle("/v1/monitor/runs/", monitorProtected)
-			mux.Handle("/v1/monitor/alerts", monitorProtected)
-			mux.Handle("/v1/monitor/alerts/", monitorProtected)
+		if authMiddleware != nil {
+			monitorHandler = authMiddleware(monitorHandler)
 		}
+		router.Any("/v1/monitor", gin.WrapH(monitorHandler))
+		router.Any("/v1/monitor/*path", gin.WrapH(monitorHandler))
 	}
 
-	return mux
+	if authMiddleware != nil {
+		adminRouter := gin.New()
+		adminapi.NewAPI(mysqlStorage).RegisterRoutes(adminRouter)
+		adminProtected := authMiddleware(adminRouter)
+		router.Any("/v1/admin", gin.WrapH(adminProtected))
+		router.Any("/v1/admin/*path", gin.WrapH(adminProtected))
+	}
+
+	return router
+}
+
+func ginCORS() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Header("Access-Control-Expose-Headers", "Content-Type")
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
 }
 
 func withCORS(next http.Handler) http.Handler {

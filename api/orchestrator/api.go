@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 func extractIDFromPath(path string, prefix string) string {
@@ -109,32 +111,32 @@ func NewOrchestratorAPIWithStorage(mysqlStorage *storage.MySQLStorage) *Orchestr
 
 // Handler 返回一个 HTTP handler，用于处理 orchestrator API 请求
 func (api *OrchestratorAPI) Handler() http.Handler {
-	mux := http.NewServeMux()
+	router := gin.New()
 
 	// 注册路由 - 注意：更具体的路由要放在前面
-	mux.HandleFunc("/v1/orchestrator/agents", api.handleListAgents)
-	mux.HandleFunc("/v1/orchestrator/agent-workflows", api.handleAgentWorkflows)
-	mux.HandleFunc("/v1/orchestrator/agent-workflows/", api.handleAgentWorkflowByID)
-	mux.HandleFunc("/v1/orchestrator/tools", api.handleListTools)
-	mux.HandleFunc("/v1/orchestrator/user-workflows", api.handleListUserWorkflows)
-	mux.HandleFunc("/v1/orchestrator/user-workflows/save", api.handleSaveUserWorkflow)
-	mux.HandleFunc("/v1/orchestrator/user-workflows/", api.handleUserWorkflowByID)
-	mux.HandleFunc("/v1/orchestrator/workflows", api.handleWorkflows)
-	mux.HandleFunc("/v1/orchestrator/workflows/", api.handleWorkflow)
-	mux.HandleFunc("/v1/orchestrator/runs/", api.handleRun)
+	router.Any("/v1/orchestrator/agents", gin.WrapF(api.handleListAgents))
+	router.Any("/v1/orchestrator/agent-workflows", gin.WrapF(api.handleAgentWorkflows))
+	router.Any("/v1/orchestrator/agent-workflows/:agentID", gin.WrapF(api.handleAgentWorkflowByID))
+	router.Any("/v1/orchestrator/tools", gin.WrapF(api.handleListTools))
+	router.Any("/v1/orchestrator/user-workflows", gin.WrapF(api.handleListUserWorkflows))
+	router.Any("/v1/orchestrator/user-workflows/save", gin.WrapF(api.handleSaveUserWorkflow))
+	router.Any("/v1/orchestrator/user-workflows/:workflowID", gin.WrapF(api.handleUserWorkflowByID))
+	router.Any("/v1/orchestrator/workflows", gin.WrapF(api.handleWorkflows))
+	router.Any("/v1/orchestrator/workflows/:workflowID", gin.WrapF(api.handleWorkflow))
+	router.Any("/v1/orchestrator/runs/:runID", gin.WrapF(api.handleRun))
 
 	// 用户工具和Agent路由
 	if api.userToolAPI != nil {
-		api.userToolAPI.RegisterRoutes(mux)
+		api.userToolAPI.RegisterRoutes(router)
 	}
 	if api.userAgentAPI != nil {
-		api.userAgentAPI.RegisterRoutes(mux)
+		api.userAgentAPI.RegisterRoutes(router)
 	}
 
 	// 根路径路由放在最后
-	mux.HandleFunc("/v1/orchestrator/", api.handleRoot)
 
-	return mux
+	router.Any("/v1/orchestrator/", gin.WrapF(api.handleRoot))
+	return router
 }
 
 // handleRoot 处理根路径请求
@@ -169,7 +171,6 @@ func (api *OrchestratorAPI) handleListAgents(w http.ResponseWriter, r *http.Requ
 		{ID: "bazihelper", Name: "八字助手", Description: "八字助手，调用 Bazi MCP 工具生成命盘并输出结构化解读"},
 		{ID: "resumecustomizer", Name: "简历优化助手", Description: "简历优化助手，结合目标岗位与上传简历生成定制版简历"},
 		{ID: "interviewsimulator", Name: "面试模拟助手", Description: "面试模拟助手，基于上传简历生成结构化模拟面试内容"},
-		{ID: "careerradar", Name: "职场雷达助手", Description: "职场雷达助手，调用 deepresearch 推荐匹配岗位并识别高风险岗位描述"},
 	}
 
 	// 追加已发布用户 agent，保证 chat/workflow 页面可选择。

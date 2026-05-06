@@ -1,4 +1,6 @@
 @startuml
+skinparam defaultFontSize 32
+skinparam titleFontSize 32
 title InterviewSimulator Agent 处理时序图
 
 actor 用户 as User

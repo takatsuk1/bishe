@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
 
 type API struct {
@@ -17,9 +19,9 @@ func NewAPI(mysqlStorage *storage.MySQLStorage) *API {
 	return &API{storage: mysqlStorage}
 }
 
-func (a *API) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/admin/users", a.handleUsers)
-	mux.HandleFunc("/v1/admin/users/", a.handleUserByID)
+func (a *API) RegisterRoutes(router gin.IRoutes) {
+	router.Any("/v1/admin/users", gin.WrapF(a.handleUsers))
+	router.Any("/v1/admin/users/*path", gin.WrapF(a.handleUserByID))
 }
 
 type adminUserItem struct {

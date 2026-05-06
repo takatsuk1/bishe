@@ -40,6 +40,7 @@ type InterviewScore struct {
 type InterviewState struct {
 	MaxRounds, NextQuestionIndex int
 	LastQuestion, ProfileSummary string
+	JobDescription               string
 	QuestionPlan                 []InterviewQuestion
 	Scores                       []InterviewScore
 }
@@ -186,6 +187,9 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 		return nil, fmt.Errorf("query empty")
 	}
 	st := loadState(payload, query)
+	if jd := extractJobDescription(query); jd != "" {
+		st.JobDescription = jd
+	}
 	model := strings.TrimSpace(a.chatModel)
 	base := strings.TrimSpace(a.llmClient.BaseURL)
 	key := strings.TrimSpace(a.llmClient.APIKey)
@@ -239,8 +243,17 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 			raw, _ := call("你是面试官助理，基于简历提炼候选人画像、风险点和高频追问点：\n"+stripStateToken(query), false)
 			st.ProfileSummary = nonEmpty(raw, "候选人画像暂不可用，请继续面试。")
 		}
+		st.ProfileSummary = ensureProfileIncludesJD(st)
 		return map[string]any{"response": st.ProfileSummary, "state": st}, nil
 	case "plan_interview":
+		if len(st.QuestionPlan) == 0 && strings.TrimSpace(st.JobDescription) != "" {
+			raw, _ := call(buildPlanPrompt(st), false)
+			st.QuestionPlan = parsePlan(raw, st.MaxRounds)
+			if len(st.QuestionPlan) == 0 {
+				st.QuestionPlan = fallbackPlan(st.MaxRounds)
+			}
+			return map[string]any{"response": "plan_ready", "state": st, "question_plan": st.QuestionPlan}, nil
+		}
 		if len(st.QuestionPlan) == 0 {
 			raw, _ := call(fmt.Sprintf("基于画像生成%d道由浅入深主问题，只输出JSON数组，每项字段question/focus/difficulty。画像：%s", st.MaxRounds, st.ProfileSummary), false)
 			st.QuestionPlan = parsePlan(raw, st.MaxRounds)
@@ -253,6 +266,15 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 		ans := extractCurrentUserInput(query)
 		if st.LastQuestion == "" || skipScore(ans) {
 			return map[string]any{"response": "score_skipped", "state": st, "score_summary": ""}, nil
+		}
+		if strings.TrimSpace(st.JobDescription) != "" {
+			raw, _ := call(buildScorePrompt(st, ans), false)
+			sc := parseScore(raw, st, ans)
+			if sc.Total == 0 {
+				sc = fallbackScore(st, ans)
+			}
+			st.Scores = append(st.Scores, sc)
+			return map[string]any{"response": "score_ready", "state": st, "score": sc, "score_summary": scoreSummary(sc)}, nil
 		}
 		raw, _ := call("仅输出JSON对象(total/correctness/depth/expression/structure/risk/highlights/weaknesses)。问题："+st.LastQuestion+"\n回答："+ans, false)
 		sc := parseScore(raw, st, ans)
@@ -267,6 +289,11 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 			return map[string]any{"response": "followup_skipped", "state": st, "followup": ""}, nil
 		}
 		strategy := scoreStrategy(sc.Total)
+		if strings.TrimSpace(st.JobDescription) != "" {
+			fu, _ := call(buildFollowupPrompt(st, sc, strategy), false)
+			fu = nonEmpty(fu, fallbackFollowup(strategy))
+			return map[string]any{"response": fu, "state": st, "followup": fu}, nil
+		}
 		fu, _ := call("根据评分生成1条追问，只输出追问句。策略："+strategy+"。原问题："+st.LastQuestion+"。评分："+scoreSummary(sc), false)
 		fu = nonEmpty(fu, fallbackFollowup(strategy))
 		return map[string]any{"response": fu, "state": st, "followup": fu}, nil

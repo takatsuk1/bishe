@@ -12,6 +12,8 @@ import (
 	"ai/pkg/logger"
 	"ai/pkg/protocol"
 	"ai/pkg/taskmanager"
+
+	"github.com/gin-gonic/gin"
 )
 
 type Processor interface {
@@ -35,11 +37,12 @@ func NewServer(card protocol.AgentCard, manager taskmanager.Manager, processor P
 }
 
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/agent.json", s.handleAgentCard)
-	mux.HandleFunc("/v1/tasks/send", s.handleSendMessage)
-	mux.HandleFunc("/v1/tasks/", s.handleTaskOps)
-	return mux
+	router := gin.New()
+	router.Any("/.well-known/agent.json", gin.WrapF(s.handleAgentCard))
+	router.Any("/v1/tasks/send", gin.WrapF(s.handleSendMessage))
+	router.Any("/v1/tasks/:taskID", gin.WrapF(s.handleTaskOps))
+	router.Any("/v1/tasks/:taskID/:action", gin.WrapF(s.handleTaskOps))
+	return router
 }
 
 func (s *Server) handleAgentCard(w http.ResponseWriter, r *http.Request) {

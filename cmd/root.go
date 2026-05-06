@@ -21,7 +21,6 @@ func init() {
 	rootCmd.AddCommand(baziHelperCmd)
 	rootCmd.AddCommand(resumeCustomizerCmd)
 	rootCmd.AddCommand(interviewSimulatorCmd)
-	rootCmd.AddCommand(careerRadarCmd)
 	rootCmd.AddCommand(hostCmd)
 	rootCmd.AddCommand(openaiConnectorCmd)
 	rootCmd.AddCommand(allinoneCmd)

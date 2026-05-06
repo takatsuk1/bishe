@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"ai/pkg/logger"
 	"bufio"
 	"bytes"
 	"context"
@@ -105,8 +106,11 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 	}
 
 	start := time.Now()
+	promptRunes, messageLens := messageLengthSummary(messages)
+	logger.Infof("[TRACE] llm.ChatCompletion start model=%s url=%s message_count=%d prompt_runes=%d message_runes=%s max_tokens=%s temperature=%s", strings.TrimSpace(model), endpoint, len(messages), promptRunes, messageLens, optionalInt(maxTokens), optionalFloat(temperature))
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		logger.Warnf("[TRACE] llm.ChatCompletion failed model=%s url=%s elapsed=%s prompt_runes=%d err=%v", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), promptRunes, err)
 		if errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() == context.DeadlineExceeded) {
 			return "", fmt.Errorf("llm timeout model=%s url=%s elapsed=%s: %w", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), err)
 		}
@@ -116,21 +120,27 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logger.Warnf("[TRACE] llm.ChatCompletion read_failed model=%s url=%s elapsed=%s prompt_runes=%d err=%v", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), promptRunes, err)
 		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Warnf("[TRACE] llm.ChatCompletion http_error model=%s url=%s elapsed=%s prompt_runes=%d status=%d body_len=%d", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), promptRunes, resp.StatusCode, len(body))
 		return "", fmt.Errorf("llm http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var parsed chatCompletionResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
+		logger.Warnf("[TRACE] llm.ChatCompletion invalid_json model=%s url=%s elapsed=%s prompt_runes=%d body_len=%d err=%v", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), promptRunes, len(body), err)
 		return "", fmt.Errorf("llm invalid json: %w", err)
 	}
 	if len(parsed.Choices) == 0 {
+		logger.Warnf("[TRACE] llm.ChatCompletion empty_choices model=%s url=%s elapsed=%s prompt_runes=%d body_len=%d", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), promptRunes, len(body))
 		return "", fmt.Errorf("llm empty choices")
 	}
 
-	return contentToString(parsed.Choices[0].Message.Content), nil
+	content := contentToString(parsed.Choices[0].Message.Content)
+	logger.Infof("[TRACE] llm.ChatCompletion done model=%s url=%s elapsed=%s prompt_runes=%d response_runes=%d", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), promptRunes, len([]rune(strings.TrimSpace(content))))
+	return content, nil
 }
 
 func (c *Client) ChatCompletionStream(
@@ -171,8 +181,11 @@ func (c *Client) ChatCompletionStream(
 	}
 
 	start := time.Now()
+	promptRunes, messageLens := messageLengthSummary(messages)
+	logger.Infof("[TRACE] llm.ChatCompletionStream start model=%s url=%s message_count=%d prompt_runes=%d message_runes=%s max_tokens=%s temperature=%s", strings.TrimSpace(model), endpoint, len(messages), promptRunes, messageLens, optionalInt(maxTokens), optionalFloat(temperature))
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		logger.Warnf("[TRACE] llm.ChatCompletionStream failed model=%s url=%s elapsed=%s prompt_runes=%d err=%v", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), promptRunes, err)
 		if errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() == context.DeadlineExceeded) {
 			return "", fmt.Errorf("llm timeout model=%s url=%s elapsed=%s: %w", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), err)
 		}
@@ -182,12 +195,15 @@ func (c *Client) ChatCompletionStream(
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
+		logger.Warnf("[TRACE] llm.ChatCompletionStream http_error model=%s url=%s elapsed=%s prompt_runes=%d status=%d body_len=%d", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), promptRunes, resp.StatusCode, len(body))
 		return "", fmt.Errorf("llm http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	reader := bufio.NewReader(resp.Body)
 	var full strings.Builder
 	var eventData strings.Builder
+	firstDeltaAt := time.Duration(0)
+	chunkCount := 0
 
 	flushEvent := func() error {
 		payload := strings.TrimSpace(eventData.String())
@@ -211,6 +227,11 @@ func (c *Client) ChatCompletionStream(
 			if delta == "" {
 				continue
 			}
+			chunkCount++
+			if firstDeltaAt == 0 {
+				firstDeltaAt = time.Since(start)
+				logger.Infof("[TRACE] llm.ChatCompletionStream first_delta model=%s url=%s after=%s prompt_runes=%d delta_runes=%d", strings.TrimSpace(model), endpoint, firstDeltaAt.Round(time.Millisecond), promptRunes, len([]rune(strings.TrimSpace(delta))))
+			}
 			full.WriteString(delta)
 			if onDelta != nil {
 				if err := onDelta(delta); err != nil {
@@ -224,6 +245,7 @@ func (c *Client) ChatCompletionStream(
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
+			logger.Warnf("[TRACE] llm.ChatCompletionStream read_failed model=%s url=%s elapsed=%s prompt_runes=%d err=%v", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), promptRunes, err)
 			return "", err
 		}
 
@@ -231,8 +253,11 @@ func (c *Client) ChatCompletionStream(
 		if strings.TrimSpace(trimmed) == "" {
 			if ferr := flushEvent(); ferr != nil {
 				if errors.Is(ferr, io.EOF) {
-					return strings.TrimSpace(full.String()), nil
+					result := strings.TrimSpace(full.String())
+					logger.Infof("[TRACE] llm.ChatCompletionStream done model=%s url=%s elapsed=%s first_delta=%s prompt_runes=%d response_runes=%d chunks=%d", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), firstDeltaAt.Round(time.Millisecond), promptRunes, len([]rune(result)), chunkCount)
+					return result, nil
 				}
+				logger.Warnf("[TRACE] llm.ChatCompletionStream flush_failed model=%s url=%s elapsed=%s prompt_runes=%d err=%v", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), promptRunes, ferr)
 				return "", ferr
 			}
 		} else if strings.HasPrefix(trimmed, "data:") {
@@ -251,9 +276,12 @@ func (c *Client) ChatCompletionStream(
 	}
 
 	if err := flushEvent(); err != nil && !errors.Is(err, io.EOF) {
+		logger.Warnf("[TRACE] llm.ChatCompletionStream final_flush_failed model=%s url=%s elapsed=%s prompt_runes=%d err=%v", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), promptRunes, err)
 		return "", err
 	}
-	return strings.TrimSpace(full.String()), nil
+	result := strings.TrimSpace(full.String())
+	logger.Infof("[TRACE] llm.ChatCompletionStream done model=%s url=%s elapsed=%s first_delta=%s prompt_runes=%d response_runes=%d chunks=%d", strings.TrimSpace(model), endpoint, time.Since(start).Round(time.Millisecond), firstDeltaAt.Round(time.Millisecond), promptRunes, len([]rune(result)), chunkCount)
+	return result, nil
 }
 
 func (c *Client) Embeddings(ctx context.Context, model string, input []string) ([][]float32, error) {
@@ -370,4 +398,36 @@ func joinURL(base, p string) (string, error) {
 	}
 	u.Path = path.Join(u.Path, p)
 	return u.String(), nil
+}
+
+func messageLengthSummary(messages []Message) (int, string) {
+	if len(messages) == 0 {
+		return 0, "[]"
+	}
+	total := 0
+	parts := make([]string, 0, len(messages))
+	for i, msg := range messages {
+		runes := len([]rune(strings.TrimSpace(msg.Content)))
+		total += runes
+		role := strings.TrimSpace(msg.Role)
+		if role == "" {
+			role = "unknown"
+		}
+		parts = append(parts, fmt.Sprintf("%d:%s=%d", i, role, runes))
+	}
+	return total, "[" + strings.Join(parts, ",") + "]"
+}
+
+func optionalInt(v *int) string {
+	if v == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
+func optionalFloat(v *float64) string {
+	if v == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%.3f", *v)
 }

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 )
 
@@ -76,14 +77,18 @@ func buildHostHTTPServer() (http.Handler, string, error) {
 }
 
 func composeHostRoutes(hostHandler, publicHandler http.Handler) http.Handler {
-	composed := http.NewServeMux()
+	composed := gin.New()
 	if publicHandler != nil {
-		composed.Handle("/v1/orchestrator/", publicHandler)
-		composed.Handle("/v1/monitor/", publicHandler)
-		composed.Handle("/v1/auth/", publicHandler)
-		composed.Handle("/v1/admin/", publicHandler)
+		composed.Any("/v1/orchestrator", gin.WrapH(publicHandler))
+		composed.Any("/v1/orchestrator/*path", gin.WrapH(publicHandler))
+		composed.Any("/v1/monitor", gin.WrapH(publicHandler))
+		composed.Any("/v1/monitor/*path", gin.WrapH(publicHandler))
+		composed.Any("/v1/auth", gin.WrapH(publicHandler))
+		composed.Any("/v1/auth/*path", gin.WrapH(publicHandler))
+		composed.Any("/v1/admin", gin.WrapH(publicHandler))
+		composed.Any("/v1/admin/*path", gin.WrapH(publicHandler))
 	}
-	composed.Handle("/", hostHandler)
+	composed.NoRoute(gin.WrapH(hostHandler))
 	return composed
 }
 

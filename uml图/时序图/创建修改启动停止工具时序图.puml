@@ -1,4 +1,6 @@
 @startuml
+skinparam defaultFontSize 34
+skinparam titleFontSize 34
 title 工具创建、修改、启动、停止时序图
 
 actor 用户 as User

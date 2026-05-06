@@ -27,9 +27,6 @@ entity "user_agent" as UserAgent {
   workflow_id
   name
   status
-  port
-  process_pid
-  code_path
 }
 
 relationship "创建工作流" as CreateWorkflow {

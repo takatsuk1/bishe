@@ -46,6 +46,7 @@ marked.setOptions({ gfm: true, breaks: true })
 const conversations = ref<Conversation[]>(loadConversations(currentUserId))
 const activeConversationId = ref<string>('')
 const prompt = ref('')
+const interviewJobDescription = ref('')
 const selectedModel = ref<AgentModel>(getGlobalSelectedAgent() || DEFAULT_AGENT)
 const availableAgents = ref<{ label: string; value: AgentModel; description: string }[]>([...AGENTS])
 const isStreaming = ref(false)
@@ -89,7 +90,13 @@ const activeConversation = computed(() =>
   conversations.value.find((item) => item.id === activeConversationId.value),
 )
 
-const canSend = computed(() => prompt.value.trim().length > 0 && !isStreaming.value)
+const isInterviewSimulator = computed(() => selectedModel.value === 'interviewsimulator')
+const canSend = computed(
+  () =>
+    prompt.value.trim().length > 0 &&
+    (!isInterviewSimulator.value || interviewJobDescription.value.trim().length > 0) &&
+    !isStreaming.value,
+)
 const selectedAgentMeta = computed(() =>
   availableAgents.value.find((agent) => agent.value === selectedModel.value),
 )
@@ -126,9 +133,11 @@ watch(
 
 watch(activeConversation, (value) => {
   if (!value) {
+    interviewJobDescription.value = ''
     return
   }
   selectedModel.value = value.model
+  interviewJobDescription.value = value.jobDescription ?? ''
   stepAutoFollow.value = true
   messageAutoFollow.value = true
 
@@ -136,6 +145,20 @@ watch(activeConversation, (value) => {
     scrollStepsToEnd(true)
     scrollMessagesToEnd(true)
   })
+})
+
+watch(interviewJobDescription, (value) => {
+  const conversation = activeConversation.value
+  if (!conversation) {
+    return
+  }
+  updateConversation(
+    conversation.id,
+    (draft) => {
+      draft.jobDescription = value
+    },
+    { touchUpdatedAt: false },
+  )
 })
 
 watch(isStreaming, async (streaming) => {
@@ -240,6 +263,7 @@ function createConversation(model: AgentModel): Conversation {
     id: uuid(),
     title: '新对话',
     model,
+    jobDescription: '',
     createdAt: now,
     updatedAt: now,
     messages: [],
@@ -310,6 +334,9 @@ function onModelChange(model: AgentModel): void {
   updateConversation(activeConversation.value.id, (draft) => {
     draft.model = model
   })
+  if (model !== 'interviewsimulator') {
+    errorText.value = ''
+  }
 }
 
 function inferStatus(content: string): TaskState | undefined {
@@ -848,6 +875,21 @@ const runStepNodeIds = computed(() => {
   return out
 })
 
+void latestStepLabel
+void activeRunStateLabel
+void runStepNodeIds
+
+function buildInterviewJobDescriptionHint(): string {
+  if (!isInterviewSimulator.value) {
+    return ''
+  }
+  const jd = interviewJobDescription.value.trim()
+  if (!jd) {
+    return ''
+  }
+  return `\n\n[job_description]\n${jd}`
+}
+
 function buildRequest(conversation: Conversation, message: ChatMessage): ChatRequest {
   const baseMessages = conversation.messages
     .filter((item) => item.id !== message.id)
@@ -872,7 +914,10 @@ function buildRequest(conversation: Conversation, message: ChatMessage): ChatReq
   return {
     model: selectedModel.value,
     conversation_id: conversation.id,
-    messages: [...baseMessages, { role: 'user', content: `${message.content}${uploadHint}` }],
+    messages: [
+      ...baseMessages,
+      { role: 'user', content: `${message.content}${buildInterviewJobDescriptionHint()}${uploadHint}` },
+    ],
     stream: true,
   }
 }
@@ -880,6 +925,10 @@ function buildRequest(conversation: Conversation, message: ChatMessage): ChatReq
 async function sendMessage(): Promise<void> {
   const content = prompt.value.trim()
   if (!content || !activeConversation.value || isStreaming.value) {
+    return
+  }
+  if (isInterviewSimulator.value && interviewJobDescription.value.trim().length === 0) {
+    errorText.value = '请先填写岗位 JD，再开始面试模拟。'
     return
   }
 
@@ -1227,7 +1276,7 @@ function renderMarkdown(content: string): string {
         </div>
         <div class="assistant-console__metric">
           <span>当前助手</span>
-          <select v-model="selectedModel" class="agent-select">
+          <select v-model="selectedModel" class="agent-select" @change="onModelChange(selectedModel)">
             <option v-for="agent in availableAgents" :key="agent.value" :value="agent.value">
               {{ agent.label }}
             </option>
@@ -1346,6 +1395,20 @@ function renderMarkdown(content: string): string {
           </section>
 
           <section class="composer-panel assistant-console__composer-panel">
+            <section v-if="isInterviewSimulator" class="interview-jd-panel">
+              <div class="interview-jd-panel__head">
+                <label for="interview-jd-input">岗位 JD <span>*</span></label>
+                <span class="task-text">面试提问会同时参考 JD 与上传简历</span>
+              </div>
+              <textarea
+                id="interview-jd-input"
+                v-model="interviewJobDescription"
+                rows="4"
+                placeholder="请粘贴目标岗位的职责、要求、技术栈、经验年限等 JD 内容"
+                :disabled="isStreaming"
+              />
+            </section>
+
             <section class="upload-zone assistant-console__upload-zone" @dragenter="preventDefaults" @dragover="preventDefaults" @drop="onDrop">
               <div class="assistant-console__upload-head">
                 <label for="upload-input">添加附件</label>
@@ -1651,6 +1714,50 @@ function renderMarkdown(content: string): string {
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.interview-jd-panel {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(247, 250, 248, 0.94), rgba(255, 255, 255, 0.9));
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.interview-jd-panel__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.interview-jd-panel label {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.interview-jd-panel label span {
+  color: #b45309;
+}
+
+.interview-jd-panel textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.interview-jd-panel textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(95, 138, 120, 0.12);
 }
 
 .assistant-console__composer {

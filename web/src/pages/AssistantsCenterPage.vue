@@ -66,12 +66,6 @@ const staticAssistantCards = [
     description: '基于简历与岗位背景进行结构化面试模拟，帮助用户提前准备问答。',
     tags: ['模拟面试', '问答训练', '结构化反馈'],
   },
-  {
-    title: '职场雷达助手',
-    agentId: 'careerradar',
-    description: '帮助识别岗位风险、推荐匹配岗位并提供求职判断支持。',
-    tags: ['岗位匹配', '风险识别', '求职辅助'],
-  },
 ]
 
 const assistantCards = computed<AssistantCenterCard[]>(() => {

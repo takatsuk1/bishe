@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
 
 type API struct {
@@ -15,14 +17,14 @@ func NewAPI(svc *authsvc.Service) *API {
 	return &API{svc: svc}
 }
 
-func (a *API) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/auth/register", a.handleRegister)
-	mux.HandleFunc("/v1/auth/login", a.handleLogin)
-	mux.HandleFunc("/v1/auth/refresh", a.handleRefresh)
-	mux.HandleFunc("/v1/auth/logout", a.handleLogout)
-	mux.HandleFunc("/v1/auth/me", a.handleMe)
-	mux.HandleFunc("/v1/auth/profile", a.handleUpdateProfile)
-	mux.HandleFunc("/v1/auth/change-password", a.handleChangePassword)
+func (a *API) RegisterRoutes(router gin.IRoutes) {
+	router.Any("/v1/auth/register", gin.WrapF(a.handleRegister))
+	router.Any("/v1/auth/login", gin.WrapF(a.handleLogin))
+	router.Any("/v1/auth/refresh", gin.WrapF(a.handleRefresh))
+	router.Any("/v1/auth/logout", gin.WrapF(a.handleLogout))
+	router.Any("/v1/auth/me", gin.WrapF(a.handleMe))
+	router.Any("/v1/auth/profile", gin.WrapF(a.handleUpdateProfile))
+	router.Any("/v1/auth/change-password", gin.WrapF(a.handleChangePassword))
 }
 
 type authRequest struct {

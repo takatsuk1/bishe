@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 type researchSource struct {
@@ -26,6 +27,7 @@ type llmSummary struct {
 }
 
 func (a *Agent) buildStructuredResponse(ctx context.Context, taskID string, query string, finalOutput map[string]any) string {
+	start := time.Now()
 	sources := collectResearchSources(finalOutput)
 	raw := strings.TrimSpace(fmt.Sprint(finalOutput["response"]))
 	raw = sanitizeRawResponse(raw)
@@ -105,10 +107,13 @@ func (a *Agent) buildStructuredResponse(ctx context.Context, taskID string, quer
 		}
 	}
 
-	return strings.TrimSpace(b.String())
+	result := strings.TrimSpace(b.String())
+	logger.Infof("[TRACE] deepresearch.build_structured_response done task=%s source_count=%d response_len=%d elapsed=%s", taskID, len(sources), len(result), time.Since(start).Round(time.Millisecond))
+	return result
 }
 
 func (a *Agent) summarizeSourcesWithLLM(ctx context.Context, taskID string, query string, sources []researchSource) (string, []string, []string) {
+	start := time.Now()
 	if len(sources) == 0 {
 		return "", nil, nil
 	}
@@ -146,14 +151,14 @@ func (a *Agent) summarizeSourcesWithLLM(ctx context.Context, taskID string, quer
 	logger.Infof("[TRACE] deepresearch.summary_llm start task=%s model=%s source_count=%d", taskID, model, len(sources))
 	resp, err := llm.NewClient(baseURL, apiKey).ChatCompletion(ctx, model, []llm.Message{{Role: "system", Content: system}, {Role: "user", Content: user}}, nil, nil)
 	if err != nil {
-		logger.Warnf("[TRACE] deepresearch.summary_llm failed task=%s err=%v", taskID, err)
+		logger.Warnf("[TRACE] deepresearch.summary_llm failed task=%s elapsed=%s err=%v", taskID, time.Since(start).Round(time.Millisecond), err)
 		return "", nil, nil
 	}
 
 	resp = strings.TrimSpace(stripMarkdownCodeFence(resp))
 	parsed := llmSummary{}
 	if err := json.Unmarshal([]byte(resp), &parsed); err != nil {
-		logger.Warnf("[TRACE] deepresearch.summary_llm invalid_json task=%s resp=%q", taskID, truncateText(resp, 120))
+		logger.Warnf("[TRACE] deepresearch.summary_llm invalid_json task=%s elapsed=%s resp=%q", taskID, time.Since(start).Round(time.Millisecond), truncateText(resp, 120))
 		return "", nil, nil
 	}
 	parsed.Summary = strings.TrimSpace(parsed.Summary)
@@ -171,10 +176,12 @@ func (a *Agent) summarizeSourcesWithLLM(ctx context.Context, taskID string, quer
 			outDetails = append(outDetails, d)
 		}
 	}
+	logger.Infof("[TRACE] deepresearch.summary_llm done task=%s elapsed=%s summary_len=%d key_points=%d details=%d", taskID, time.Since(start).Round(time.Millisecond), len(parsed.Summary), len(outPoints), len(outDetails))
 	return parsed.Summary, outPoints, outDetails
 }
 
 func (a *Agent) streamStructuredResponseWithLLM(ctx context.Context, taskID string, query string, finalOutput map[string]any, manager internaltm.Manager) (string, error) {
+	start := time.Now()
 	if manager == nil {
 		return "", fmt.Errorf("task manager unavailable")
 	}
@@ -233,9 +240,12 @@ func (a *Agent) streamStructuredResponseWithLLM(ctx context.Context, taskID stri
 		})
 	})
 	if err != nil {
+		logger.Warnf("[TRACE] deepresearch.summary_llm.stream failed task=%s elapsed=%s err=%v", taskID, time.Since(start).Round(time.Millisecond), err)
 		return "", err
 	}
-	return strings.TrimSpace(out.String()), nil
+	result := strings.TrimSpace(out.String())
+	logger.Infof("[TRACE] deepresearch.summary_llm.stream done task=%s elapsed=%s response_len=%d", taskID, time.Since(start).Round(time.Millisecond), len(result))
+	return result, nil
 }
 
 func collectResearchSources(finalOutput map[string]any) []researchSource {

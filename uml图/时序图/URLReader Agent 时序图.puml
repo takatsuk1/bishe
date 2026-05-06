@@ -1,4 +1,6 @@
 @startuml
+skinparam defaultFontSize 30
+skinparam titleFontSize 30
 title URLReader Agent 处理时序图
 
 actor 用户 as User

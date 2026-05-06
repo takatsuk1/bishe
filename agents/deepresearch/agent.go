@@ -138,6 +138,7 @@ func NewAgent() (*Agent, error) {
 
 func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg internalproto.Message,
 	manager internaltm.Manager) error {
+	processStart := time.Now()
 	if len(initialMsg.Parts) == 0 {
 		return fmt.Errorf("invalid input parts")
 	}
@@ -175,6 +176,7 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	}
 
 	logger.Infof("[TRACE] deepresearch.ProcessInternal start task=%s query_len=%d", taskID, len(query))
+	startWorkflowAt := time.Now()
 	runID, err := a.orchestratorEngine.StartWorkflow(ctx, DeepResearchWorkflowID, map[string]any{
 		"task_id": taskID,
 		"query":   query,
@@ -185,14 +187,15 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	if err != nil {
 		return fmt.Errorf("failed to start deepresearch workflow: %w", err)
 	}
-	logger.Infof("[TRACE] deepresearch.ProcessInternal started task=%s run_id=%s", taskID, runID)
+	logger.Infof("[TRACE] deepresearch.ProcessInternal started task=%s run_id=%s start_workflow_elapsed=%s", taskID, runID, time.Since(startWorkflowAt).Round(time.Millisecond))
 	stopProgress := a.startProgressReporter(ctx, taskID, runID, manager)
 	defer stopProgress()
+	waitRunAt := time.Now()
 	runResult, err := a.orchestratorEngine.WaitRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("failed to wait deepresearch workflow: %w", err)
 	}
-	logger.Infof("[TRACE] deepresearch.ProcessInternal done task=%s run_state=%s err=%s", taskID, runResult.State, runResult.ErrorMessage)
+	logger.Infof("[TRACE] deepresearch.ProcessInternal done task=%s run_state=%s err=%s wait_run_elapsed=%s total_elapsed=%s", taskID, runResult.State, runResult.ErrorMessage, time.Since(waitRunAt).Round(time.Millisecond), time.Since(processStart).Round(time.Millisecond))
 	for _, nr := range runResult.NodeResults {
 		logger.Infof("[TRACE] deepresearch.ProcessInternal node_result task=%s node=%s state=%s node_task=%s err=%s", taskID, nr.NodeID, nr.State, nr.TaskID, nr.ErrorMsg)
 	}
@@ -204,6 +207,7 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	}
 	out := ""
 	streamedFinal := false
+	finalizeAt := time.Now()
 	if manager != nil {
 		if streamed, err := a.streamStructuredResponseWithLLM(ctx, taskID, query, runResult.FinalOutput, manager); err == nil && strings.TrimSpace(streamed) != "" {
 			out = streamed
@@ -218,6 +222,7 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 		out = a.buildStructuredResponse(ctx, taskID, query, runResult.FinalOutput)
 	}
 	out = agentfmt.Clean(out)
+	logger.Infof("[TRACE] deepresearch.ProcessInternal final_response_ready task=%s streamed=%t response_len=%d finalize_elapsed=%s total_elapsed=%s", taskID, streamedFinal, len(out), time.Since(finalizeAt).Round(time.Millisecond), time.Since(processStart).Round(time.Millisecond))
 	if out == "" {
 		out = "Workflow executed successfully"
 	}
@@ -236,6 +241,7 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 }
 
 func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.ExecutionRequest) (orchestrator.ExecutionResult, error) {
+	nodeStart := time.Now()
 	taskID, _ := req.Payload["task_id"].(string)
 	query, _ := req.Payload["query"].(string)
 	logger.Infof("[TRACE] deepresearch.node_input task=%s node=%s type=%s query_len=%d payload=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, len(strings.TrimSpace(query)), snapshotAnyForLog(req.Payload, 2000))
@@ -265,14 +271,15 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 		output = map[string]any{"response": response}
 	}
 	if err != nil {
-		logger.Infof("[TRACE] deepresearch.node_error task=%s node=%s type=%s err=%v", taskID, strings.TrimSpace(req.NodeID), req.NodeType, err)
+		logger.Infof("[TRACE] deepresearch.node_error task=%s node=%s type=%s elapsed=%s err=%v", taskID, strings.TrimSpace(req.NodeID), req.NodeType, time.Since(nodeStart).Round(time.Millisecond), err)
 		return orchestrator.ExecutionResult{}, err
 	}
-	logger.Infof("[TRACE] deepresearch.node_output task=%s node=%s type=%s output=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, snapshotAnyForLog(output, 2000))
+	logger.Infof("[TRACE] deepresearch.node_output task=%s node=%s type=%s elapsed=%s output=%s", taskID, strings.TrimSpace(req.NodeID), req.NodeType, time.Since(nodeStart).Round(time.Millisecond), snapshotAnyForLog(output, 2000))
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
 func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string, query string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
+	callStart := time.Now()
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("query is empty")
@@ -283,7 +290,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 		if v, ok := nodeCfg["normalize_bool"].(bool); ok && v {
 			normalizeBool = true
 			if !hasSearchEvidence(payload) {
-				logger.Infof("[TRACE] deepresearch.judge task=%s no_search_evidence force=false", taskID)
+				logger.Infof("[TRACE] deepresearch.judge task=%s node=%s no_search_evidence force=false elapsed=%s", taskID, strings.TrimSpace(nodeID), time.Since(callStart).Round(time.Millisecond))
 				return map[string]any{"response": "false"}, nil
 			}
 		}
@@ -303,7 +310,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 			model = strings.TrimSpace(v)
 		}
 	}
-	logger.Infof("[TRACE] deepresearch.chatmodel start task=%s model=%s url=%s api_key_set=%t query_len=%d", taskID, model, baseURL, apiKey != "", len(query))
+	logger.Infof("[TRACE] deepresearch.chatmodel start task=%s node=%s model=%s url=%s api_key_set=%t query_len=%d normalize_bool=%t", taskID, strings.TrimSpace(nodeID), model, baseURL, apiKey != "", len(query), normalizeBool)
 	if baseURL == "" || model == "" {
 		return nil, fmt.Errorf("chat_model config missing url/model")
 	}
@@ -343,6 +350,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 		}
 	}
 	if err != nil {
+		logger.Warnf("[TRACE] deepresearch.chatmodel failed task=%s node=%s model=%s elapsed=%s err=%v", taskID, nodeID, model, time.Since(callStart).Round(time.Millisecond), err)
 		return nil, err
 	}
 	resp = strings.TrimSpace(resp)
@@ -352,12 +360,13 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 	if normalizeBool {
 		resp = normalizeBoolResponse(resp)
 	}
-	logger.Infof("[TRACE] deepresearch.chatmodel done task=%s resp_len=%d", taskID, len(resp))
+	logger.Infof("[TRACE] deepresearch.chatmodel done task=%s node=%s model=%s elapsed=%s resp_len=%d", taskID, nodeID, model, time.Since(callStart).Round(time.Millisecond), len(resp))
 
 	return map[string]any{"response": resp}, nil
 }
 
 func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeCfg map[string]any, payload map[string]any) (map[string]any, error) {
+	callStart := time.Now()
 	toolName := ""
 	if nodeCfg != nil {
 		if v, ok := nodeCfg["tool_name"].(string); ok {
@@ -382,6 +391,7 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 	if _, ok := params["task_id"]; !ok {
 		params["task_id"] = taskID
 	}
+	logger.Infof("[TRACE] deepresearch.tool start task=%s tool=%s query_len=%d params=%s", taskID, toolName, len(strings.TrimSpace(fmt.Sprint(params["query"]))), snapshotAnyForLog(params, 1200))
 	if strings.EqualFold(toolName, "tavily") {
 		keywordFromExtract := false
 		if extractOut, ok := payload["N_extract_keywords"].(map[string]any); ok {
@@ -424,12 +434,14 @@ func (a *Agent) callTool(ctx context.Context, taskID string, query string, nodeC
 	}
 	out, err := tool.Execute(ctx, params)
 	if err != nil {
+		logger.Warnf("[TRACE] deepresearch.tool failed task=%s tool=%s elapsed=%s err=%v", taskID, toolName, time.Since(callStart).Round(time.Millisecond), err)
 		return nil, err
 	}
 	resp := summarizeToolResponse(out)
 	if strings.EqualFold(toolName, "tavily") {
 		a.emitSemanticStep(ctx, taskID, "deepresearch.search.end", internalproto.StepStateEnd, "搜索完成："+summarizeSearchPreview(out))
 	}
+	logger.Infof("[TRACE] deepresearch.tool done task=%s tool=%s elapsed=%s response_preview=%s", taskID, toolName, time.Since(callStart).Round(time.Millisecond), truncateText(resp, 240))
 	return map[string]any{"response": resp, "result": out}, nil
 }
 

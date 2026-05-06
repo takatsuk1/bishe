@@ -1,4 +1,4 @@
-﻿package resumecustomizer
+package resumecustomizer
 
 import (
 	"ai/config"
@@ -230,7 +230,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 		return orchestrator.ExecutionResult{Output: output}, nil
 	}
 
-	output, err := w.agent.callChatModel(ctx, taskID, strings.TrimSpace(req.NodeID), query, req.NodeConfig)
+	output, err := w.agent.callChatModel(ctx, taskID, strings.TrimSpace(req.NodeID), req.Payload, query, req.NodeConfig)
 	if err != nil {
 		logger.Infof("[TRACE] resumecustomizer.node_error task=%s node=%s type=%s err=%v", taskID, strings.TrimSpace(req.NodeID), req.NodeType, err)
 		return orchestrator.ExecutionResult{}, err
@@ -239,7 +239,7 @@ func (w *workflowNodeWorker) Execute(ctx context.Context, req orchestrator.Execu
 	return orchestrator.ExecutionResult{Output: output}, nil
 }
 
-func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string, query string, nodeCfg map[string]any) (map[string]any, error) {
+func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string, payload map[string]any, query string, nodeCfg map[string]any) (map[string]any, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("query is empty")
@@ -269,7 +269,7 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, nodeID string,
 	case "analyze_resume":
 		finalPrompt = buildAnalyzePrompt(query)
 	case "tailor_resume":
-		finalPrompt = buildTailorPrompt(query)
+		finalPrompt = buildTailorPrompt(query, extractNodeResponse(payload, "analyze"))
 	}
 	streamToUser := strings.EqualFold(strings.TrimSpace(intent), "tailor_resume") || strings.EqualFold(strings.TrimSpace(nodeID), "tailor")
 

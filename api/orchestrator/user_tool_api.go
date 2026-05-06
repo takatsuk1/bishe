@@ -13,6 +13,8 @@ import (
 	"ai/pkg/logger"
 	"ai/pkg/storage"
 	"ai/pkg/tools"
+
+	"github.com/gin-gonic/gin"
 )
 
 type UserToolAPI struct {
@@ -360,9 +362,10 @@ func (api *UserToolAPI) repairAmapMCPToolConfig(ctx context.Context, def *storag
 	def.Config["server_url"] = serverURL
 }
 
-func (api *UserToolAPI) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/orchestrator/user-tools", api.handleUserTools)
-	mux.HandleFunc("/v1/orchestrator/user-tools/", api.handleUserToolByID)
+func (api *UserToolAPI) RegisterRoutes(router gin.IRoutes) {
+	router.Any("/v1/orchestrator/user-tools", gin.WrapF(api.handleUserTools))
+	router.Any("/v1/orchestrator/user-tools/:toolID", gin.WrapF(api.handleUserToolByID))
+	router.Any("/v1/orchestrator/user-tools/:toolID/:action", gin.WrapF(api.handleUserToolByID))
 }
 
 func (api *UserToolAPI) handleUserTools(w http.ResponseWriter, r *http.Request) {

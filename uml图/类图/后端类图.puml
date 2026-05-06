@@ -1,4 +1,6 @@
 @startuml
+skinparam defaultFontSize 32
+skinparam titleFontSize 32
 title 后端整体全局类图
 
 skinparam shadowing false
@@ -23,41 +25,6 @@ class ChatServer {
   + StreamChatCompletion(req): Stream
 }
 
-class OrchestratorAPI {
-  - authService: AuthService
-  - executor: WorkflowExecutor
-  - runManager: RunManager
-  - storage: Storage
-  + SaveWorkflow(req): Result
-  + TestUserAgent(req): Result
-  + PublishUserAgent(req): Result
-}
-
-class AuthServer {
-  - authService: AuthService
-  - storage: Storage
-  + Register(req): Result
-  + Login(req): Result
-  + Refresh(req): Result
-  + UpdateProfile(req): Result
-}
-
-class MonitorServer {
-  - authService: AuthService
-  - monitorService: MonitorService
-  + GetOverview(): Result
-  + GetRuns(): Result
-  + GetAlerts(): Result
-}
-
-class AdminServer {
-  - authService: AuthService
-  - storage: Storage
-  + ListUsers(): Result
-  + UpdateUserRoles(req): Result
-  + UpdateUserStatus(req): Result
-}
-
 class WorkflowExecutor {
   - toolRegistry: ToolRegistry
   - storage: Storage
@@ -66,13 +33,6 @@ class WorkflowExecutor {
   + ExecuteWorkflowFromDefinition(def, input): Result
 }
 
-class RunManager {
-  - storage: Storage
-  + CreateRun(input): Run
-  + UpdateRunStatus(id, status): void
-  + RecordEvent(event): void
-  + CreateAlert(alert): void
-}
 
 class HostAgent {
   - toolRegistry: ToolRegistry
@@ -113,32 +73,6 @@ class ToolRegistry {
   + ListTools(): []Tool
 }
 
-class Storage {
-  + SaveWorkflow(def): void
-  + GetWorkflow(id): WorkflowDefinition
-  + SaveDraftWorkflow(id, draft): void
-  + DeleteDraftWorkflow(id): void
-  + SaveRun(run): void
-  + SaveEvent(event): void
-  + SaveAlert(alert): void
-}
-
-class MonitorService {
-  - storage: Storage
-  + GetOverview(): Overview
-  + GetRunDetail(id): RunDetail
-  + GetAlerts(): []Alert
-}
-
-class AuthService {
-  - storage: Storage
-  + ValidateToken(token): User
-  + Register(req): User
-  + Login(req): AuthResult
-  + UpdateProfile(req): User
-  + ChangePassword(req): Result
-}
-
 class WorkflowDefinition {
   + ID: string
   + Name: string
@@ -147,37 +81,9 @@ class WorkflowDefinition {
   + Edges: []EdgeDef
 }
 
-class NodeDef {
-  + ID: string
-  + Type: string
-  + Name: string
-  + Config: map
-}
 
-class EdgeDef {
-  + ID: string
-  + From: string
-  + To: string
-  + Label: string
-}
 
-ChatServer --> AuthService : 依赖
 ChatServer --> WorkflowExecutor : 依赖
-ChatServer --> Storage : 依赖
-
-OrchestratorAPI --> AuthService : 依赖
-OrchestratorAPI --> WorkflowExecutor : 依赖
-OrchestratorAPI --> RunManager : 依赖
-OrchestratorAPI --> Storage : 依赖
-
-AuthServer --> AuthService : 依赖
-AuthServer --> Storage : 依赖
-
-MonitorServer --> AuthService : 依赖
-MonitorServer --> MonitorService : 依赖
-
-AdminServer --> AuthService : 依赖
-AdminServer --> Storage : 依赖
 
 WorkflowExecutor --> ToolRegistry : 依赖
 WorkflowExecutor --> RunManager : 依赖
@@ -185,10 +91,6 @@ WorkflowExecutor --> Storage : 依赖
 WorkflowExecutor *-- WorkflowDefinition
 WorkflowDefinition *-- NodeDef
 WorkflowDefinition *-- EdgeDef
-
-RunManager --> Storage : 依赖
-MonitorService --> Storage : 依赖
-AuthService --> Storage : 依赖
 
 Agent <|.. HostAgent
 Agent <|.. SpecializedAgent

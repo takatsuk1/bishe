@@ -1,4 +1,6 @@
 @startuml
+skinparam defaultFontSize 34
+skinparam titleFontSize 34
 title 创建 / 编辑 / 保存智能体工作流时序图
 
 actor 用户 as User

@@ -17,6 +17,8 @@ import (
 	"ai/pkg/noncore_service"
 	"ai/pkg/storage"
 	"ai/pkg/tools"
+
+	"github.com/gin-gonic/gin"
 )
 
 type UserAgentAPI struct {
@@ -40,9 +42,11 @@ func NewUserAgentAPI(mysqlStorage *storage.MySQLStorage, exec *executor.Interpre
 	}
 }
 
-func (api *UserAgentAPI) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/orchestrator/user-agents", api.handleUserAgents)
-	mux.HandleFunc("/v1/orchestrator/user-agents/", api.handleUserAgentByID)
+func (api *UserAgentAPI) RegisterRoutes(router gin.IRoutes) {
+	router.Any("/v1/orchestrator/user-agents", gin.WrapF(api.handleUserAgents))
+	router.Any("/v1/orchestrator/user-agents/test", gin.WrapF(api.handleUserAgentByID))
+	router.Any("/v1/orchestrator/user-agents/:agentID", gin.WrapF(api.handleUserAgentByID))
+	router.Any("/v1/orchestrator/user-agents/:agentID/:action", gin.WrapF(api.handleUserAgentByID))
 }
 
 func (api *UserAgentAPI) handleUserAgents(w http.ResponseWriter, r *http.Request) {

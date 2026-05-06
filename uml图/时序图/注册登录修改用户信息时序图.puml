@@ -1,4 +1,6 @@
 @startuml
+skinparam defaultFontSize 30
+skinparam titleFontSize 30
 title 注册、登录与用户信息维护时序图
 
 actor 用户 as User
