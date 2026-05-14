@@ -38,6 +38,7 @@ func NewServer(card protocol.AgentCard, manager taskmanager.Manager, processor P
 
 func (s *Server) Handler() http.Handler {
 	router := gin.New()
+	// 调用agent的接口URL绑定处
 	router.Any("/.well-known/agent.json", gin.WrapF(s.handleAgentCard))
 	router.Any("/v1/tasks/send", gin.WrapF(s.handleSendMessage))
 	router.Any("/v1/tasks/:taskID", gin.WrapF(s.handleTaskOps))
@@ -83,6 +84,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.Infof("[TRACE] httpagent.Server /v1/tasks/send rid=%s in_task=%v role=%s", rid, req.Message.TaskID, req.Message.Role)
+	//调用对应Agent的ProcessMessage接口，拿到 taskID
 	taskID, _, err := s.processor.ProcessMessage(ctx, req.Message, s.manager)
 	if err != nil {
 		logger.Infof("[TRACE] httpagent.Server /v1/tasks/send rid=%s process_failed dur=%s err=%v", rid, time.Since(start), err)
@@ -176,6 +178,7 @@ func (s *Server) handleStreamEvents(w http.ResponseWriter, r *http.Request, task
 		if task.Status.State.IsTerminal() {
 			logger.Infof("[TRACE] httpagent.Server /events rid=%s task=%s terminal_snapshot state=%s dur=%s", rid, taskID, task.Status.State, time.Since(start))
 			return
+
 		}
 	}
 

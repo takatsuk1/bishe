@@ -1,11 +1,11 @@
 package chat
 
 import (
+	hostagent "ai/agents/host"
 	"ai/api/chat/api"
 	"ai/config"
 	authsvc "ai/pkg/auth"
 	"ai/pkg/memory"
-	"ai/pkg/protocol"
 	"ai/pkg/storage"
 	"bytes"
 	"context"
@@ -29,16 +29,16 @@ import (
 )
 
 type inMemoryFactory struct {
-	mu      sync.Mutex
+	mu       sync.Mutex
 	memories map[string]*inMemoryStore
 }
 
 type inMemoryStore struct {
-	userID         string
-	mu             sync.Mutex
-	state          map[string]string
-	conversations  map[string]*inMemoryConversation
-	currentID      string
+	userID          string
+	mu              sync.Mutex
+	state           map[string]string
+	conversations   map[string]*inMemoryConversation
+	currentID       string
 	conversationSeq int64
 }
 
@@ -277,60 +277,56 @@ func TestChatPerformanceProfile(t *testing.T) {
 	defer cleanupChatPerfUser(ctx, rawDB, user.UserID)
 	defer cleanupChatPerfRedis(ctx, user.UserID)
 
-	mockAgent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/.well-known/agent.json":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(protocol.AgentCard{Name: "mockchat"})
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/send":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(protocol.SendMessageResponse{TaskID: fmt.Sprintf("task-%d", time.Now().UnixNano())})
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/tasks/") && strings.HasSuffix(r.URL.Path, "/events"):
-			taskID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/tasks/"), "/events")
-			w.Header().Set("Content-Type", "text/event-stream")
-			flusher, _ := w.(http.Flusher)
-			writeEvent := func(ev protocol.StreamEvent) {
-				b, _ := json.Marshal(ev)
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(b))
-				if flusher != nil {
-					flusher.Flush()
-				}
-			}
-			writeEvent(protocol.NewTaskStatusEvent(taskID, protocol.TaskStatus{
-				State: protocol.TaskStateWorking,
-				Message: &protocol.Message{
-					Role:  protocol.MessageRoleAgent,
-					Parts: []protocol.Part{protocol.NewTextPart("mock-reply-")},
-				},
-				UpdatedAt: time.Now().UnixMilli(),
-			}))
-			writeEvent(protocol.NewTaskStatusEvent(taskID, protocol.TaskStatus{
-				State: protocol.TaskStateCompleted,
-				Message: &protocol.Message{
-					Role:  protocol.MessageRoleAgent,
-					Parts: []protocol.Part{protocol.NewTextPart("done")},
-				},
-				UpdatedAt: time.Now().UnixMilli(),
-			}))
-		default:
-			http.NotFound(w, r)
+	mockLLM := newWorkflowMockLLMServer(t, func(prompt string) string {
+		if strings.Contains(prompt, "Host 路由助手") {
+			return "false"
 		}
-	}))
-	defer mockAgent.Close()
+		if strings.Contains(prompt, "通用中文助手") {
+			return "底层工作流引擎直答结果"
+		}
+		return "false"
+	})
+	defer mockLLM.Close()
 
-	origAgents := append([]config.AgentConfig(nil), cfg.OpenAIConnector.Agents...)
-	cfg.OpenAIConnector.Agents = []config.AgentConfig{{Name: "mockchat", ServerURL: mockAgent.URL}}
+	origLLMURL := cfg.LLM.URL
+	origLLMAPIKey := cfg.LLM.APIKey
+	origChatModel := cfg.LLM.ChatModel
+	origReasoningModel := cfg.LLM.ReasoningModel
+	origHostAgents := append([]config.AgentConfig(nil), cfg.HostAgent.Agents...)
+	origOpenAIAgents := append([]config.AgentConfig(nil), cfg.OpenAIConnector.Agents...)
 	defer func() {
-		cfg.OpenAIConnector.Agents = origAgents
+		cfg.LLM.URL = origLLMURL
+		cfg.LLM.APIKey = origLLMAPIKey
+		cfg.LLM.ChatModel = origChatModel
+		cfg.LLM.ReasoningModel = origReasoningModel
+		cfg.HostAgent.Agents = origHostAgents
+		cfg.OpenAIConnector.Agents = origOpenAIAgents
 	}()
+
+	cfg.LLM.URL = mockLLM.URL
+	cfg.LLM.APIKey = ""
+	cfg.LLM.ChatModel = "mockchat"
+	cfg.LLM.ReasoningModel = "mockchat"
+	cfg.HostAgent.Agents = nil
+
+	hostAgent, err := hostagent.NewAgent()
+	if err != nil {
+		t.Fatalf("init host agent failed: %v", err)
+	}
+	hostServer, err := hostagent.NewHTTPServer(hostAgent)
+	if err != nil {
+		t.Fatalf("init host http server failed: %v", err)
+	}
+	hostHTTP := httptest.NewServer(hostServer)
+	defer hostHTTP.Close()
+
+	cfg.OpenAIConnector.Agents = []config.AgentConfig{{Name: "mockchat", ServerURL: hostHTTP.URL}}
 
 	origAuthService := authService
 	origAuthServiceErr := authServiceErr
-	origAuthOnce := authServiceOnce
 	defer func() {
 		authService = origAuthService
 		authServiceErr = origAuthServiceErr
-		authServiceOnce = origAuthOnce
 	}()
 
 	memoryFactoryOnce = sync.Once{}
@@ -527,4 +523,73 @@ func cleanupChatPerfRedis(ctx context.Context, userID string) {
 	if cli, err := storage.GetRedisClient(); err == nil {
 		_, _ = cli.Del(ctx, fmt.Sprintf("{user:%s}:state", userID), fmt.Sprintf("{user:%s}:conversations", userID)).Result()
 	}
+}
+
+func newWorkflowMockLLMServer(t *testing.T, pick func(prompt string) string) *httptest.Server {
+	t.Helper()
+	type chatReq struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+		Stream bool `json:"stream"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+
+		var req chatReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		prompt := ""
+		if len(req.Messages) > 0 {
+			prompt = req.Messages[len(req.Messages)-1].Content
+		}
+		content := pick(prompt)
+		if !req.Stream {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"content": content},
+				}},
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		flusher, _ := w.(http.Flusher)
+		parts := []string{content}
+		if len([]rune(content)) > 8 {
+			runes := []rune(content)
+			mid := len(runes) / 2
+			parts = []string{string(runes[:mid]), string(runes[mid:])}
+		}
+		for _, part := range parts {
+			if strings.TrimSpace(part) == "" {
+				continue
+			}
+			chunk := map[string]any{
+				"choices": []map[string]any{{
+					"delta": map[string]any{"content": part},
+				}},
+			}
+			b, _ := json.Marshal(chunk)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
 }

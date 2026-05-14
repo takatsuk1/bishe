@@ -177,6 +177,7 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 
 	logger.Infof("[TRACE] deepresearch.ProcessInternal start task=%s query_len=%d", taskID, len(query))
 	startWorkflowAt := time.Now()
+	// 启动工作流，底层引擎开始执行
 	runID, err := a.orchestratorEngine.StartWorkflow(ctx, DeepResearchWorkflowID, map[string]any{
 		"task_id": taskID,
 		"query":   query,
@@ -188,9 +189,11 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 		return fmt.Errorf("failed to start deepresearch workflow: %w", err)
 	}
 	logger.Infof("[TRACE] deepresearch.ProcessInternal started task=%s run_id=%s start_workflow_elapsed=%s", taskID, runID, time.Since(startWorkflowAt).Round(time.Millisecond))
+	// 启动一个协程去监控工作流执行状态，并把进度通过 manager 写回给前端，直到工作流结束。
 	stopProgress := a.startProgressReporter(ctx, taskID, runID, manager)
 	defer stopProgress()
 	waitRunAt := time.Now()
+	// 等待工作流执行完成，拿到最终结果或者错误
 	runResult, err := a.orchestratorEngine.WaitRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("failed to wait deepresearch workflow: %w", err)
@@ -209,6 +212,7 @@ func (a *Agent) ProcessInternal(ctx context.Context, taskID string, initialMsg i
 	streamedFinal := false
 	finalizeAt := time.Now()
 	if manager != nil {
+		// 在这里面进行最后的整理，并调用UpdateTaskState把最终结果流式写回给前端，标志任务完成。
 		if streamed, err := a.streamStructuredResponseWithLLM(ctx, taskID, query, runResult.FinalOutput, manager); err == nil && strings.TrimSpace(streamed) != "" {
 			out = streamed
 			streamedFinal = true

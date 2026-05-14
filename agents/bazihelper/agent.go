@@ -237,6 +237,9 @@ func (a *Agent) callChatModel(ctx context.Context, taskID string, query string, 
 		finalPrompt = buildSummaryPrompt(payload, query)
 	}
 
+	// 当判断为整理八字结果的节点时，开启流式输出功能，
+	// 实时把模型输出的内容通过 manager 写回给前端，
+	// 让用户可以边看结果边等待最终完成，而不是等全部结果生成后一次性看到。
 	streamToUser := strings.EqualFold(strings.TrimSpace(intent), "summarize_bazi_result")
 
 	client := llm.NewClient(baseURL, apiKey)

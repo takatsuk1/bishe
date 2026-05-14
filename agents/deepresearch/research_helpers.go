@@ -226,6 +226,7 @@ func (a *Agent) streamStructuredResponseWithLLM(ctx context.Context, taskID stri
 	a.emitSemanticStep(ctx, taskID, "deepresearch.final.organize.start", internalproto.StepStateInfo, "正在调用大模型整理结果：")
 	var out strings.Builder
 	client := llm.NewClient(baseURL, apiKey)
+	// 调用 ChatCompletionStream 接口，实时获取模型输出的增量内容，并通过 manager.UpdateTaskState 写回给前端，形成流式输出效果。
 	_, err := client.ChatCompletionStream(ctx, model, []llm.Message{
 		{Role: "system", Content: system},
 		{Role: "user", Content: user},

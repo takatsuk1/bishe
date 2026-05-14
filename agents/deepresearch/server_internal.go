@@ -31,6 +31,8 @@ func (p *internalProcessor) ProcessMessage(ctx context.Context, message protocol
 	go func() {
 		// 异步执行内部逻辑，让 HTTP 层可以立即返回 taskID 和事件订阅通道。
 		_ = manager.UpdateTaskState(ctx, taskID, protocol.TaskStateWorking, nil)
+
+		// 调用 Agent 内部的处理函数，这个函数会持续写事件到 manager 里，直到任务完成或失败。
 		if runErr := p.agent.ProcessInternal(ctx, taskID, message, manager); runErr != nil {
 			// 发生错误时，把错误信息包装成 agent 消息写回任务状态。
 			_ = manager.UpdateTaskState(ctx, taskID, protocol.TaskStateFailed, &protocol.Message{

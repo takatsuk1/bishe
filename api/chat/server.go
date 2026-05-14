@@ -180,6 +180,7 @@ func NewOpenAIServer() (http.Handler, error) {
 	})
 	engine.ContextWithFallback = true
 	// 下面这些路由共同组成 openai_connector 暴露给前端的统一入口。
+	// 聊天接口URL绑定处
 	engine.POST("/v1/chat/completions", ChatMiddleware(), s.chatHandler)
 	engine.POST("/v1/files/upload", s.uploadFilesHandler)
 	engine.Any("/v1/orchestrator/*path", s.proxyOrchestrator)
@@ -471,11 +472,32 @@ func (s *Server) chatHandler(c *gin.Context) {
 		client := httpagent.NewClient(agentConfig.ServerURL, time.Minute*10)
 		ctx = httpagent.WithRequestID(ctx, requestID)
 
+		// SendMessage 和 StreamTaskEvents 是串行调用的，前者发起任务并拿到 taskID，
+		// 后者用这个 taskID 来消费事件流。
+
+		// 为什么这里只用taskID，而不是获取后端业务中的实际Channel来直接获取流式的业务数据？
+		// 因为该项目中后端Agent并不是起在同一个端口中的，所以不同进程的Channel是不可见的，只能通过间接的方式获取数据。
+		// 因此实际流式的机制是，引入单独的请求转发层HttpAgent
+		// Api层发请求消息到HttpAgent客户端，HttpAgent客户端再去调用后端Agent的接口发起任务并获取到taskID，
+		// 之后Api层再通过这个taskID去调用HttpAgent客户端StreamTaskEvents接口获取事件流，
+		// 实际的请求消息和结果获取都是通过HttpAgent进行转发的。
+		// 好处：将后端Agent的实现细节完全隔离开来
+		// Api层只关心taskID和事件流，不需要知道后端Agent的具体接口和数据格式。同时，请求不会一直阻塞，可以进行后续接口处理或者短线重连等等。
+		// 为什么不能api层直接sse地调用后端agent？如果发生重试重入问题，
+		// api层是无法感知到之前的请求的，可能出现多个完全相同的任务，导致资源浪费；
+		// 并且会导致api层与业务Agent逻辑粘连，职责划分不清；
+		// 除此之外，直接sse请求，只能获得纯文本的内容，而通过封装task，可以加入更多的元信息和结构化数据，提升系统健壮性。
+		// 总结：发布订阅式的设计将请求与结果解耦封装，提升了系统健壮性与可维护性。
 		taskID, err = client.SendMessage(ctx, initMessage)
 		if err != nil {
 			ch <- gin.H{"error": err.Error()}
 			return
 		}
+
+		//客户端streamtaskevents单独开了个channel，然后去打后端接口handlestreamevents，
+		// 这个接口里面会去获取到实际的后端业务中的channel获取实时数据，
+		// 获取到之后通过sse传给客户端，客户端再通过新建的channel把打接口获取到的数据给到api层
+		// 这里的taskChan主要用于接受agent执行过程中流式给出的执行关键步骤和agent最终的输出结果
 		taskChan, errChan := client.StreamTaskEvents(ctx, taskID)
 
 		// 一边消费 agent 的事件流，一边把输出回推给前端，并累计完整回复内容。
@@ -487,6 +509,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 				if st != lastState {
 					lastState = st
 				}
+				// 每当任务状态更新时，都把它翻译成一条 chat response 发回前端，保证前端能实时感知到状态变化。
 				handleTaskStatusUpdateEvent(ctx, req, ch, *v.TaskStatusUpdate)
 				if v.TaskStatusUpdate.Status.Message != nil {
 					for _, part := range v.TaskStatusUpdate.Status.Message.Parts {
@@ -528,6 +551,7 @@ func (s *Server) chatHandler(c *gin.Context) {
 		ch <- res
 	}()
 
+	// 实际从channel中获取流式数据并写回给前端的逻辑在这个函数。
 	streamResponse(c, ch)
 }
 

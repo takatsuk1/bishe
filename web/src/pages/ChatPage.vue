@@ -522,6 +522,9 @@ function flushLiveStream(forceScroll = false): void {
   if (liveStreamPending.length === 0) {
     return
   }
+  // 触发响应式更新，liveStreamContent发生变化时vue会重新计算这个函数的返回值，从而触发该遍历内部的set拦截器，
+  // 检查它的订阅者列表，如果有组件依赖这个函数的返回值，就会通知它重新渲染(这里对应的是ChatPage的模板渲染代码messageContentForRender)
+  // 从而实现界面上内容的实时更新。
   liveStreamContent.value += liveStreamPending
   liveStreamPending = ''
   if (forceScroll || messageAutoFollow.value) {
@@ -539,6 +542,8 @@ function enqueueLiveStreamChunk(chunk: string): void {
   if (liveStreamFlushTimer != null) {
     return
   }
+  // 定时器每隔STREAM_FLUSH_INTERVAL_MS毫秒触发一次flushLiveStream函数，
+  // 这个函数会将liveStreamPending中的内容追加到liveStreamContent中，并触发界面更新，从而实现流式输出的效果。
   liveStreamFlushTimer = window.setTimeout(() => {
     flushLiveStream(false)
   }, STREAM_FLUSH_INTERVAL_MS)
@@ -980,6 +985,7 @@ async function sendMessage(): Promise<void> {
   stepAutoFollow.value = true
 
   try {
+    // 发送请求
     const sendChatRequest = async (retry = true): Promise<Response> => {
       const token = getAccessToken()
       const response = await fetch(`${API_BASE_URL}/v1/chat/completions`, {
@@ -1004,6 +1010,9 @@ async function sendMessage(): Promise<void> {
       throw new Error(`请求失败（${response.status}）`)
     }
 
+    // 持续读取流式响应
+    // parseNdjsonStream函数会将响应体解析为一个异步迭代器，
+    // 每次迭代都会返回一个新的数据块（chunk），直到整个响应体被读取完毕。
     for await (const chunk of parseNdjsonStream(response.body)) {
       if (chunk.error) {
         throw new Error(chunk.error)
@@ -1041,6 +1050,8 @@ async function sendMessage(): Promise<void> {
         }
       }
 
+      // 每次接收到新的数据块时，enqueueLiveStreamChunk函数会被调用，
+      // 将新的内容添加到liveStreamPending中，并设置一个定时器来定期刷新界面显示的内容。
       if (cleanedChunk.length > 0) {
         enqueueLiveStreamChunk(cleanedChunk)
       }
@@ -1378,6 +1389,9 @@ function renderMarkdown(content: string): string {
                     </li>
                   </ul>
                 </section>
+                <!-- 绑定messageContentForRender函数，liveStreamContent是响应式引用，发生变化会被vue拦截到更新。 -->
+                <!-- 组件首次渲染时，执行到此处会执行该函数，由于函数内部使用了liveStreamContent.value -->
+                <!-- vue会将该函数的结果与liveStreamContent.value建立依赖关系。 -->
                 <p v-if="messageContentForRender(msg) && isStreamingAssistantMessage(msg)" class="content">
                   {{ messageContentForRender(msg) }}
                 </p>
@@ -1674,6 +1688,8 @@ function renderMarkdown(content: string): string {
 
 .assistant-console__body {
   gap: 12px;
+  display: flex;
+  flex-direction: column;
 }
 
 .assistant-console__messages-panel,
@@ -1683,6 +1699,17 @@ function renderMarkdown(content: string): string {
 
 .assistant-console__messages-panel {
   padding: 12px;
+  flex: 0 0 auto;
+  resize: vertical;
+  overflow: auto;
+  min-height: 200px;
+  height: 50%;
+}
+
+.assistant-console__composer-panel {
+  flex: 1 1 0;
+  overflow: auto;
+  min-height: 150px;
 }
 
 .assistant-console__messages {

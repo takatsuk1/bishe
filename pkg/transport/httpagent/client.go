@@ -42,6 +42,8 @@ func (c *Client) SendMessage(ctx context.Context, message protocol.Message) (str
 		logger.Infof("[TRACE] httpagent.SendMessage rid=%s marshal_failed err=%v", reqID, err)
 		return "", err
 	}
+	// 打server接口，发送消息并创建任务，
+	// 拿到 taskID 后就可以返回了，后续的事件流会通过 StreamTaskEvents 接口来获取。
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/tasks/send", bytes.NewReader(payload))
 	if err != nil {
 		logger.Infof("[TRACE] httpagent.SendMessage rid=%s new_request_failed err=%v", reqID, err)
@@ -121,14 +123,18 @@ func (c *Client) CancelTask(ctx context.Context, taskID string) (*protocol.Task,
 }
 
 func (c *Client) StreamTaskEvents(ctx context.Context, taskID string) (<-chan protocol.StreamEvent, <-chan error) {
+	// 创建两个 channel：一个用于交给api层，接受后端的事件
 	eventCh := make(chan protocol.StreamEvent, 32)
 	errCh := make(chan error, 1)
+	// 启一个协程去打接口获取事件流，拿到事件后写到 eventCh 里，api层就可以消费了。
 	go func() {
 		defer close(eventCh)
 		defer close(errCh)
 		start := time.Now()
 		reqID := RequestIDFromContext(ctx)
 		logger.Infof("[TRACE] httpagent.StreamTaskEvents start rid=%s base=%s task=%s", reqID, c.baseURL, taskID)
+		// 打server接口，获取事件流，
+		// 这个接口会一直保持连接，后端有事件时会实时写回数据，直到任务结束或者发生错误。
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/tasks/"+taskID+"/events", nil)
 		if err != nil {
 			logger.Infof("[TRACE] httpagent.StreamTaskEvents rid=%s new_request_failed err=%v", reqID, err)

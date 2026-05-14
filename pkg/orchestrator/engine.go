@@ -597,6 +597,7 @@ func startNodeHandler(ctx context.Context, e *engine, _ *Workflow, run *workflow
 		"started": true,
 		"next":    nextNodeID,
 	}
+	//取出shared中的用户输入
 	q := firstNonEmptyString(
 		mapString(shared, "query"),
 		mapString(shared, "text"),
