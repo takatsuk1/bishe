@@ -18,3 +18,6 @@ web/dist/
 .DS_Store
 Thumbs.db
 .vscode/.ropeproject/
+
+# 忽略 uml图 文件夹及其所有内容
+uml图/
