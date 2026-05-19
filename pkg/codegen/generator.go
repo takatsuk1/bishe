@@ -323,7 +323,7 @@ func (g *CodeGenerator) generateNewAgent(req *AgentGenerateRequest) string {
 	buf.WriteString("\t\tagent.chatModel = strings.TrimSpace(cfg.LLM.ReasoningModel)\n")
 	buf.WriteString("\t}\n")
 	buf.WriteString("\tif agent.chatModel == \"\" {\n")
-	buf.WriteString("\t\tagent.chatModel = \"qwen3.5-plus\"\n")
+	buf.WriteString("\t\tagent.chatModel = \"qwen3.5-27b\"\n")
 	buf.WriteString("\t}\n")
 
 	for _, tool := range req.Tools {

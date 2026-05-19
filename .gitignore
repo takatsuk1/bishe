@@ -21,3 +21,4 @@ Thumbs.db
 
 # 忽略 uml图 文件夹及其所有内容
 uml图/
+config.yaml

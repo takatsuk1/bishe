@@ -57,7 +57,7 @@ func NewAgent() (*Agent, error) {
 		a.chatModel = strings.TrimSpace(cfg.LLM.ReasoningModel)
 	}
 	if a.chatModel == "" {
-		a.chatModel = "qwen3.5-flash"
+		a.chatModel = "qwen3.5-27b"
 	}
 	engineCfg := orchestrator.Config{DefaultTaskTimeoutSec: cfg.Orchestrator.DefaultTaskTimeoutSec, RetryMaxAttempts: cfg.Orchestrator.Retry.MaxAttempts, RetryBaseBackoffMs: cfg.Orchestrator.Retry.BaseBackoffMs, RetryMaxBackoffMs: cfg.Orchestrator.Retry.MaxBackoffMs}
 	if engineCfg.DefaultTaskTimeoutSec <= 0 {

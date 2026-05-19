@@ -63,7 +63,7 @@ func NewAgent() (*Agent, error) {
 		agent.chatModel = strings.TrimSpace(cfg.LLM.ReasoningModel)
 	}
 	if agent.chatModel == "" {
-		agent.chatModel = "qwen3.5-flash"
+		agent.chatModel = "qwen3.5-27b"
 	}
 	logger.Infof("[TRACE] host llm_config url=%s model=%s api_key_set=%t", strings.TrimSpace(cfg.LLM.URL), agent.chatModel, strings.TrimSpace(cfg.LLM.APIKey) != "")
 

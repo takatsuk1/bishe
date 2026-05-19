@@ -70,7 +70,7 @@ func NewAgent() (*Agent, error) {
 		agent.chatModel = strings.TrimSpace(cfg.LLM.ReasoningModel)
 	}
 	if agent.chatModel == "" {
-		agent.chatModel = "qwen3.5-plus"
+		agent.chatModel = "qwen3.5-27b"
 	}
 	AgentInfoToolConfig := tools.HTTPToolConfig{
 		Method:  "GET",

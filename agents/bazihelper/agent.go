@@ -67,7 +67,7 @@ func NewAgent() (*Agent, error) {
 		agent.chatModel = strings.TrimSpace(cfg.LLM.ReasoningModel)
 	}
 	if agent.chatModel == "" {
-		agent.chatModel = "qwen3-235b-a22b"
+		agent.chatModel = "qwen3.5-27b"
 	}
 
 	agent.BaziTool = tools.NewBaziMCPTool()

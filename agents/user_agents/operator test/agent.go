@@ -73,7 +73,7 @@ func NewAgent() (*Agent, error) {
 		agent.chatModel = strings.TrimSpace(cfg.LLM.ReasoningModel)
 	}
 	if agent.chatModel == "" {
-		agent.chatModel = "qwen3.5-plus"
+		agent.chatModel = "qwen3.5-27b"
 	}
 	AmapToolConfig := tools.MCPToolConfig{
 		ServerURL: "https://mcp.amap.com/sse?key=603b7b141042d9e7418bd3617c1758c2",
@@ -672,16 +672,16 @@ func buildOperatorTestWorkflow() (*orchestrator.Workflow, error) {
 	if err = wf.AddNode(orchestrator.Node{ID: "N1", Type: orchestrator.NodeTypeStart, Config: map[string]any{"input_source": "previous"}, Metadata: map[string]string{"next_to": "循环", "ui.agent": "orchestrator", "ui.label": "开始", "ui.x": "120", "ui.y": "121"}}); err != nil {
 		return nil, err
 	}
-	if err = wf.AddNode(orchestrator.Node{ID: "判断", Type: orchestrator.NodeTypeChatModel, AgentID: OperatorTestWorkflowWorkerID, TaskType: "chat_model", PreInput: "根据当前检索结果判断是否已经足够回答用户问题。仅输出 true 或 false。", Config: map[string]any{"apikey": "sk-5796edd8954b4227971d376c9007a699", "input_source": "history", "input_type": "string", "model": "qwen3.5-plus", "output_type": "string", "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/"}, Metadata: map[string]string{"next_to": "分支", "ui.agent": "custom", "ui.label": "模型推理", "ui.x": "542", "ui.y": "8"}}); err != nil {
+	if err = wf.AddNode(orchestrator.Node{ID: "判断", Type: orchestrator.NodeTypeChatModel, AgentID: OperatorTestWorkflowWorkerID, TaskType: "chat_model", PreInput: "根据当前检索结果判断是否已经足够回答用户问题。仅输出 true 或 false。", Config: map[string]any{"apikey": "sk-5796edd8954b4227971d376c9007a699", "input_source": "history", "input_type": "string", "model": "qwen3.5-27b", "output_type": "string", "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/"}, Metadata: map[string]string{"next_to": "分支", "ui.agent": "custom", "ui.label": "模型推理", "ui.x": "542", "ui.y": "8"}}); err != nil {
 		return nil, err
 	}
 	if err = wf.AddNode(orchestrator.Node{ID: "循环", Type: orchestrator.NodeTypeLoop, Metadata: map[string]string{"ui.agent": "custom", "ui.label": "循环", "ui.x": "377", "ui.y": "204"}, LoopConfig: &orchestrator.LoopConfig{MaxIterations: 5, ContinueTo: "判断", ExitTo: "整理"}}); err != nil {
 		return nil, err
 	}
-	if err = wf.AddNode(orchestrator.Node{ID: "整理", Type: orchestrator.NodeTypeChatModel, AgentID: OperatorTestWorkflowWorkerID, TaskType: "chat_model", PreInput: "根据当前检索结果整理输出为结构化内容。当前结果: ", Config: map[string]any{"apikey": "sk-5796edd8954b4227971d376c9007a699", "input_source": "history", "input_type": "string", "model": "qwen3.5-plus", "output_type": "string", "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/"}, Metadata: map[string]string{"next_to": "结束", "ui.agent": "custom", "ui.label": "模型推理", "ui.x": "711", "ui.y": "215"}}); err != nil {
+	if err = wf.AddNode(orchestrator.Node{ID: "整理", Type: orchestrator.NodeTypeChatModel, AgentID: OperatorTestWorkflowWorkerID, TaskType: "chat_model", PreInput: "根据当前检索结果整理输出为结构化内容。当前结果: ", Config: map[string]any{"apikey": "sk-5796edd8954b4227971d376c9007a699", "input_source": "history", "input_type": "string", "model": "qwen3.5-27b", "output_type": "string", "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/"}, Metadata: map[string]string{"next_to": "结束", "ui.agent": "custom", "ui.label": "模型推理", "ui.x": "711", "ui.y": "215"}}); err != nil {
 		return nil, err
 	}
-	if err = wf.AddNode(orchestrator.Node{ID: "提取", Type: orchestrator.NodeTypeChatModel, AgentID: OperatorTestWorkflowWorkerID, TaskType: "chat_model", PreInput: "请基于用户问题与当前检索结果，提取一个新的检索关键词。只输出关键词。", Config: map[string]any{"apikey": "sk-5796edd8954b4227971d376c9007a699", "input_source": "history", "input_type": "string", "model": "qwen3.5-plus", "output_type": "string", "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/"}, Metadata: map[string]string{"next_to": "搜索", "ui.agent": "custom", "ui.label": "模型推理", "ui.x": "785", "ui.y": "454"}}); err != nil {
+	if err = wf.AddNode(orchestrator.Node{ID: "提取", Type: orchestrator.NodeTypeChatModel, AgentID: OperatorTestWorkflowWorkerID, TaskType: "chat_model", PreInput: "请基于用户问题与当前检索结果，提取一个新的检索关键词。只输出关键词。", Config: map[string]any{"apikey": "sk-5796edd8954b4227971d376c9007a699", "input_source": "history", "input_type": "string", "model": "qwen3.5-27b", "output_type": "string", "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/"}, Metadata: map[string]string{"next_to": "搜索", "ui.agent": "custom", "ui.label": "模型推理", "ui.x": "785", "ui.y": "454"}}); err != nil {
 		return nil, err
 	}
 	if err = wf.AddNode(orchestrator.Node{ID: "分支", Type: orchestrator.NodeTypeCondition, Config: map[string]any{"operator": "eq", "right_type": "bool", "right_value": "true"}, Metadata: map[string]string{"false_to": "提取", "true_to": "整理", "ui.agent": "custom", "ui.label": "条件判断", "ui.x": "834", "ui.y": "18"}}); err != nil {
